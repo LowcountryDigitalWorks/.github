@@ -1,0 +1,6 @@
+{
+  "name": "Lowcountry Digital Works static-site validation",
+  "description": "Runs a repository-provided Python validator for static websites.",
+  "iconName": "octicon check-circle",
+  "categories": ["Code quality", "Deployment"]
+}
