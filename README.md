@@ -26,6 +26,12 @@ This repository self-validates its GitHub workflow definitions and starter workf
 
 The workflow downloads the official Linux release binaries directly from their upstream GitHub releases, verifies pinned SHA-256 digests before execution, and runs zizmor in offline mode. No wrapper Action, hosted scanner account, local workstation installation, or recurring subscription is required for this baseline.
 
+## Secret-scanning proof gate
+
+This repository also proves the proposed LDW secret-scanning approach with **Betterleaks v1.7.4** in GitHub Actions. The proof gate downloads the immutable upstream Linux release, verifies its pinned SHA-256 digest, verifies the detector against a runtime-only synthetic canary, and scans the repository's full Git history.
+
+Potential secret contents are intentionally suppressed from CI output and are not uploaded as artifacts. This proof does **not** yet replace repository-specific secret controls or make Betterleaks mandatory across all LDW repositories; organization-wide rollout should occur only after the proof is accepted and a reusable workflow contract is defined.
+
 ## Boundaries
 
 This repository does **not** own:
