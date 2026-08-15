@@ -26,11 +26,13 @@ This repository self-validates its GitHub workflow definitions and starter workf
 
 The workflow downloads the official Linux release binaries directly from their upstream GitHub releases, verifies pinned SHA-256 digests before execution, and runs zizmor in offline mode. No wrapper Action, hosted scanner account, local workstation installation, or recurring subscription is required for this baseline.
 
-## Secret-scanning proof gate
+## Reusable secret-scanning baseline
 
-This repository also proves the proposed LDW secret-scanning approach with **Betterleaks v1.7.4** in GitHub Actions. The proof gate downloads the immutable upstream Linux release, verifies its pinned SHA-256 digest, verifies the detector against a runtime-only synthetic canary, and scans the repository's full Git history.
+`security-secrets.yml` provides the first reusable LDW repository-security workflow. It uses **Betterleaks v1.7.4**, downloaded from its immutable upstream GitHub release and verified against a pinned SHA-256 digest before execution. The workflow checks out the caller repository with full history, uses read-only GitHub permissions, and suppresses potential secret contents from CI output and artifacts.
 
-Potential secret contents are intentionally suppressed from CI output and are not uploaded as artifacts. This proof does **not** yet replace repository-specific secret controls or make Betterleaks mandatory across all LDW repositories; organization-wide rollout should occur only after the proof is accepted and a reusable workflow contract is defined.
+`prove-secret-scanning.yml` is a thin self-test for that reusable workflow. It enables a runtime-only synthetic canary so changes to the central implementation must demonstrate that the detector still finds a known test pattern before the control repository accepts them.
+
+Existing repository-specific secret controls remain in place until each product workstream deliberately adopts and validates the reusable baseline. Callers should reference an independently reviewed immutable commit SHA of this repository rather than `@main` or another mutable reference.
 
 ## Boundaries
 
