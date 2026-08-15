@@ -1,0 +1,235 @@
+name: LDW reusable npm dependency scan
+
+on:
+  workflow_call:
+    inputs:
+      online_queries:
+        description: Allow OSV network queries using caller dependency metadata. Defaults to false for privacy-preserving offline scanning.
+        required: false
+        type: boolean
+        default: false
+      verify_canary:
+        description: Verify the online detector with a runtime-only vulnerable npm lockfile. Offline mode always verifies its bootstrap canary.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  OSV_SCANNER_VERSION: "2.5.0"
+  OSV_SCANNER_SHA256: "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c"
+
+jobs:
+  dependency-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install verified OSV-Scanner before caller checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          osv_bin="$RUNNER_TEMP/osv-scanner"
+          db_root="$RUNNER_TEMP/osv-db"
+          url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --output "$osv_bin" "$url"
+          echo "${OSV_SCANNER_SHA256}  ${osv_bin}" | sha256sum --check --strict
+          chmod +x "$osv_bin"
+          "$osv_bin" --version
+          mkdir -p "$db_root"
+          echo "OSV_SCANNER_BIN=$osv_bin" >> "$GITHUB_ENV"
+          echo "OSV_DB_ROOT=$db_root" >> "$GITHUB_ENV"
+
+      - name: Bootstrap npm database and verify offline detector
+        if: ${{ ! inputs.online_queries }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          canary_dir="$RUNNER_TEMP/osv-offline-canary"
+          result_json="$RUNNER_TEMP/osv-offline-bootstrap.json"
+          stderr_log="$RUNNER_TEMP/osv-offline-bootstrap.stderr"
+          mkdir -p "$canary_dir"
+
+          cat > "$canary_dir/package-lock.json" <<'JSON'
+          {
+            "name": "ldw-osv-offline-canary",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": {
+                "name": "ldw-osv-offline-canary",
+                "version": "1.0.0",
+                "dependencies": {
+                  "lodash": "4.17.20"
+                }
+              },
+              "node_modules/lodash": {
+                "version": "4.17.20",
+                "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
+                "integrity": "sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==",
+                "license": "MIT"
+              }
+            }
+          }
+          JSON
+
+          start_seconds=$SECONDS
+          set +e
+          "$OSV_SCANNER_BIN" scan source \
+            --offline-vulnerabilities \
+            --download-offline-databases \
+            --no-resolve \
+            --local-db-path="$OSV_DB_ROOT" \
+            --lockfile="$canary_dir/package-lock.json" \
+            --format=json \
+            >"$result_json" 2>"$stderr_log"
+          status=$?
+          set -e
+          elapsed_seconds=$((SECONDS - start_seconds))
+
+          if [[ "$status" -ne 1 ]] || ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
+            rm -rf "$canary_dir" "$result_json" "$stderr_log"
+            echo "OSV offline bootstrap canary failed validation." >&2
+            exit 1
+          fi
+
+          if ! find "$OSV_DB_ROOT" -type f -name all.zip -print -quit | grep -q .; then
+            rm -rf "$canary_dir" "$result_json" "$stderr_log"
+            echo "OSV offline bootstrap did not create the expected npm vulnerability database." >&2
+            exit 1
+          fi
+
+          rm -rf "$canary_dir" "$result_json" "$stderr_log"
+          db_bytes="$(du -sb "$OSV_DB_ROOT" | cut -f1)"
+          echo "OSV offline npm database and detector verified."
+          echo "Offline database bytes: $db_bytes"
+          echo "Offline database bootstrap seconds: $elapsed_seconds"
+
+      - name: Verify online detector with runtime-only canary
+        if: ${{ inputs.online_queries && inputs.verify_canary }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          canary_dir="$RUNNER_TEMP/osv-online-canary"
+          result_json="$RUNNER_TEMP/osv-online-canary.json"
+          stderr_log="$RUNNER_TEMP/osv-online-canary.stderr"
+          mkdir -p "$canary_dir"
+
+          cat > "$canary_dir/package-lock.json" <<'JSON'
+          {
+            "name": "ldw-osv-online-canary",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": {
+                "name": "ldw-osv-online-canary",
+                "version": "1.0.0",
+                "dependencies": {
+                  "lodash": "4.17.20"
+                }
+              },
+              "node_modules/lodash": {
+                "version": "4.17.20",
+                "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
+                "integrity": "sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==",
+                "license": "MIT"
+              }
+            }
+          }
+          JSON
+
+          set +e
+          "$OSV_SCANNER_BIN" scan source \
+            --lockfile="$canary_dir/package-lock.json" \
+            --format=json \
+            >"$result_json" 2>"$stderr_log"
+          status=$?
+          set -e
+
+          if [[ "$status" -ne 1 ]] || ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
+            rm -rf "$canary_dir" "$result_json" "$stderr_log"
+            echo "OSV online canary failed validation." >&2
+            exit 1
+          fi
+
+          rm -rf "$canary_dir" "$result_json" "$stderr_log"
+          echo "OSV online detector canary verified."
+
+      - name: Check out caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Scan JavaScript lockfiles without exposing scanner output
+        shell: bash
+        env:
+          ONLINE_QUERIES: ${{ inputs.online_queries }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' lockfiles < <(
+            find . -path './.git' -prune -o -type f \
+              \( -name 'bun.lock' -o -name 'package-lock.json' -o -name 'pnpm-lock.yaml' -o -name 'yarn.lock' \) \
+              -print0
+          )
+
+          if (( ${#lockfiles[@]} == 0 )); then
+            echo "No supported JavaScript lockfiles found; dependency scan is not applicable."
+            exit 0
+          fi
+
+          findings=0
+          index=0
+          for lockfile in "${lockfiles[@]}"; do
+            result_json="$RUNNER_TEMP/osv-result-${index}.json"
+            stderr_log="$RUNNER_TEMP/osv-result-${index}.stderr"
+            args=(scan source --lockfile="$lockfile" --format=json)
+
+            if [[ "$ONLINE_QUERIES" != "true" ]]; then
+              args+=(--offline --no-resolve --local-db-path="$OSV_DB_ROOT")
+            fi
+
+            set +e
+            "$OSV_SCANNER_BIN" "${args[@]}" >"$result_json" 2>"$stderr_log"
+            status=$?
+            set -e
+
+            case "$status" in
+              0)
+                if ! jq -e . "$result_json" >/dev/null; then
+                  rm -f "$result_json" "$stderr_log"
+                  echo "OSV-Scanner returned an invalid clean-result payload." >&2
+                  exit 1
+                fi
+                ;;
+              1)
+                if jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
+                  findings=1
+                else
+                  rm -f "$result_json" "$stderr_log"
+                  echo "OSV-Scanner returned exit code 1 without a valid vulnerability payload." >&2
+                  exit 1
+                fi
+                ;;
+              128)
+                ;;
+              *)
+                rm -f "$result_json" "$stderr_log"
+                echo "OSV-Scanner failed with exit code $status. Scanner output is intentionally suppressed from CI logs." >&2
+                exit "$status"
+                ;;
+            esac
+
+            rm -f "$result_json" "$stderr_log"
+            index=$((index + 1))
+          done
+
+          if [[ "$findings" -ne 0 ]]; then
+            echo "OSV-Scanner detected one or more known vulnerabilities in JavaScript dependencies. Finding contents are intentionally suppressed from CI logs." >&2
+            exit 1
+          fi
+
+          echo "OSV-Scanner JavaScript dependency scan passed."

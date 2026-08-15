@@ -3,158 +3,18 @@ name: Prove OSV offline mode
 on:
   pull_request:
     paths:
+      - .github/workflows/security-dependencies-npm.yml
       - .github/workflows/prove-osv-offline-mode.yml
-      - README.md
   push:
     branches: [main]
     paths:
+      - .github/workflows/security-dependencies-npm.yml
       - .github/workflows/prove-osv-offline-mode.yml
-      - README.md
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  OSV_SCANNER_VERSION: "2.5.0"
-  OSV_SCANNER_SHA256: "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c"
-
 jobs:
   offline-mode-proof:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install verified OSV-Scanner
-        shell: bash
-        run: |
-          set -euo pipefail
-          osv_bin="$RUNNER_TEMP/osv-scanner"
-          db_root="$RUNNER_TEMP/osv-db"
-          url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
-
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --output "$osv_bin" "$url"
-          echo "${OSV_SCANNER_SHA256}  ${osv_bin}" | sha256sum --check --strict
-          chmod +x "$osv_bin"
-          "$osv_bin" --version
-          mkdir -p "$db_root"
-          echo "OSV_SCANNER_BIN=$osv_bin" >> "$GITHUB_ENV"
-          echo "OSV_DB_ROOT=$db_root" >> "$GITHUB_ENV"
-
-      - name: Create runtime-only vulnerable npm lockfile
-        shell: bash
-        run: |
-          set -euo pipefail
-          canary_dir="$RUNNER_TEMP/osv-offline-canary"
-          mkdir -p "$canary_dir"
-          cat > "$canary_dir/package-lock.json" <<'JSON'
-          {
-            "name": "ldw-osv-offline-canary",
-            "version": "1.0.0",
-            "lockfileVersion": 3,
-            "requires": true,
-            "packages": {
-              "": {
-                "name": "ldw-osv-offline-canary",
-                "version": "1.0.0",
-                "dependencies": {
-                  "lodash": "4.17.20"
-                }
-              },
-              "node_modules/lodash": {
-                "version": "4.17.20",
-                "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
-                "integrity": "sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==",
-                "license": "MIT"
-              }
-            }
-          }
-          JSON
-          echo "OSV_CANARY_DIR=$canary_dir" >> "$GITHUB_ENV"
-
-      - name: Bootstrap local database and verify vulnerable dependency
-        shell: bash
-        run: |
-          set -euo pipefail
-          result_json="$RUNNER_TEMP/osv-offline-download.json"
-          stderr_log="$RUNNER_TEMP/osv-offline-download.stderr"
-          start_seconds=$SECONDS
-
-          set +e
-          "$OSV_SCANNER_BIN" scan source \
-            --offline-vulnerabilities \
-            --download-offline-databases \
-            --no-resolve \
-            --local-db-path="$OSV_DB_ROOT" \
-            --lockfile="$OSV_CANARY_DIR/package-lock.json" \
-            --format=json \
-            >"$result_json" 2>"$stderr_log"
-          status=$?
-          set -e
-
-          elapsed_seconds=$((SECONDS - start_seconds))
-
-          if [[ "$status" -ne 1 ]]; then
-            rm -f "$result_json" "$stderr_log"
-            echo "OSV offline database bootstrap failed: expected vulnerability exit code 1, received $status." >&2
-            exit 1
-          fi
-
-          if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
-            rm -f "$result_json" "$stderr_log"
-            echo "OSV offline database bootstrap did not produce a valid JSON vulnerability result." >&2
-            exit 1
-          fi
-
-          if ! find "$OSV_DB_ROOT" -type f -name all.zip -print -quit | grep -q .; then
-            rm -f "$result_json" "$stderr_log"
-            echo "OSV offline database bootstrap did not create a local vulnerability database." >&2
-            exit 1
-          fi
-
-          rm -f "$result_json" "$stderr_log"
-          db_bytes="$(du -sb "$OSV_DB_ROOT" | cut -f1)"
-          echo "OSV offline database bootstrap verified."
-          echo "Offline database bytes: $db_bytes"
-          echo "Offline database bootstrap seconds: $elapsed_seconds"
-
-      - name: Verify cached fully offline scan
-        shell: bash
-        run: |
-          set -euo pipefail
-          result_json="$RUNNER_TEMP/osv-offline-scan.json"
-          stderr_log="$RUNNER_TEMP/osv-offline-scan.stderr"
-          start_seconds=$SECONDS
-
-          set +e
-          "$OSV_SCANNER_BIN" scan source \
-            --offline \
-            --no-resolve \
-            --local-db-path="$OSV_DB_ROOT" \
-            --lockfile="$OSV_CANARY_DIR/package-lock.json" \
-            --format=json \
-            >"$result_json" 2>"$stderr_log"
-          status=$?
-          set -e
-
-          elapsed_seconds=$((SECONDS - start_seconds))
-
-          if [[ "$status" -ne 1 ]]; then
-            rm -rf "$OSV_CANARY_DIR" "$result_json" "$stderr_log"
-            echo "OSV cached offline scan failed: expected vulnerability exit code 1, received $status." >&2
-            exit 1
-          fi
-
-          if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
-            rm -rf "$OSV_CANARY_DIR" "$result_json" "$stderr_log"
-            echo "OSV cached offline scan did not produce a valid JSON vulnerability result." >&2
-            exit 1
-          fi
-
-          rm -rf "$OSV_CANARY_DIR" "$result_json" "$stderr_log"
-          echo "OSV cached fully offline detector verified."
-          echo "Cached offline scan seconds: $elapsed_seconds"
+    uses: ./.github/workflows/security-dependencies-npm.yml
