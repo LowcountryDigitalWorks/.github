@@ -34,17 +34,16 @@ jobs:
         run: |
           set -euo pipefail
           osv_bin="$RUNNER_TEMP/osv-scanner"
-          cache_home="$RUNNER_TEMP/osv-cache"
+          db_root="$RUNNER_TEMP/osv-db"
           url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
 
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --output "$osv_bin" "$url"
           echo "${OSV_SCANNER_SHA256}  ${osv_bin}" | sha256sum --check --strict
           chmod +x "$osv_bin"
           "$osv_bin" --version
-          mkdir -p "$cache_home"
+          mkdir -p "$db_root"
           echo "OSV_SCANNER_BIN=$osv_bin" >> "$GITHUB_ENV"
-          echo "XDG_CACHE_HOME=$cache_home" >> "$GITHUB_ENV"
-          echo "OSV_DB_ROOT=$cache_home/osv-scanner" >> "$GITHUB_ENV"
+          echo "OSV_DB_ROOT=$db_root" >> "$GITHUB_ENV"
 
       - name: Create runtime-only vulnerable npm lockfile
         shell: bash
@@ -90,6 +89,7 @@ jobs:
             --offline-vulnerabilities \
             --download-offline-databases \
             --no-resolve \
+            --local-db-path="$OSV_DB_ROOT" \
             --lockfile="$OSV_CANARY_DIR/package-lock.json" \
             --format=json \
             >"$result_json" 2>"$stderr_log"
@@ -112,7 +112,7 @@ jobs:
 
           if ! find "$OSV_DB_ROOT" -type f -name all.zip -print -quit | grep -q .; then
             rm -f "$result_json" "$stderr_log"
-            echo "OSV offline database bootstrap did not create the expected local database structure." >&2
+            echo "OSV offline database bootstrap did not create a local vulnerability database." >&2
             exit 1
           fi
 
@@ -134,6 +134,7 @@ jobs:
           "$OSV_SCANNER_BIN" scan source \
             --offline \
             --no-resolve \
+            --local-db-path="$OSV_DB_ROOT" \
             --lockfile="$OSV_CANARY_DIR/package-lock.json" \
             --format=json \
             >"$result_json" 2>"$stderr_log"
