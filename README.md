@@ -34,30 +34,31 @@ The workflow downloads the official Linux release binaries directly from their u
 
 The reusable secret workflow has been cross-repository validated from the private `LowcountryDigitalWorks/business-operations` repository. Existing repository-specific secret controls remain in place until each product workstream deliberately adopts and validates the reusable baseline. Callers should reference an independently reviewed immutable commit SHA of this repository rather than `@main` or another mutable reference.
 
-## Dependency-scanning proof gate
+## Reusable JavaScript dependency-scanning baseline
 
-`prove-dependency-scanning.yml` evaluates **OSV-Scanner v2.5.0** as the ecosystem-neutral dependency-vulnerability baseline. The proof downloads the official Linux amd64 release artifact, verifies its pinned SHA-256 digest before execution, and verifies detection against a runtime-only vulnerable lockfile without installing or executing the test package.
+`security-dependencies-npm.yml` provides the reusable LDW dependency-vulnerability workflow for JavaScript lockfiles using **OSV-Scanner v2.5.0**. The initial scope is intentionally limited to the lockfiles OSV-Scanner documents for JavaScript: `bun.lock`, `package-lock.json`, `pnpm-lock.yaml`, and `yarn.lock`. Other ecosystems should be added only when an LDW repository actually requires them and their privacy/cost behavior has been separately validated.
 
-OSV-Scanner has had a GitHub Actions output-injection weakness involving attacker-controlled paths. LDW therefore redirects scanner stdout and stderr to ephemeral runner files that are deleted without being emitted or uploaded; CI exposes only fixed, sanitized pass/fail messages and numeric exit codes. This defense remains in place even as upstream fixes evolve.
+The reusable workflow downloads the official Linux amd64 OSV-Scanner release artifact and verifies SHA-256 `edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c` before execution. Scanner stdout and stderr are redirected to ephemeral runner files that are deleted without being emitted or uploaded; CI exposes only fixed, sanitized messages and process status. Existing ecosystem-native audits such as npm/pnpm audit remain independent controls.
 
-### Dependency-scan privacy policy
+### Privacy model
 
-The default LDW policy is:
+The workflow's default is privacy-preserving offline matching. Callers must explicitly set `online_queries: true` to permit OSV network queries using caller dependency metadata.
 
-- **public LDW repositories:** online OSV vulnerability matching is acceptable by default because their dependency metadata is already public;
-- **private LDW and customer repositories:** full OSV `--offline` mode is the default because it does not send project or dependency information to upstream services once the local vulnerability database exists;
-- `--offline-vulnerabilities` is not considered equivalent to full offline mode because other features, including dependency resolution, may still make network requests;
-- exceptions for a private/customer repository require an explicit repository-owner/workstream decision based on the sensitivity of package metadata and the coverage needed.
+In default offline mode, the workflow downloads and verifies OSV-Scanner, then bootstraps the npm vulnerability database against a runtime-only synthetic public lockfile **before the caller repository is checked out**. Dependency resolution is disabled during bootstrap. Only after the local database and detector are verified does the workflow check out the caller repository and inspect its JavaScript lockfiles using full `--offline` mode with `--no-resolve`.
 
-Full offline mode has coverage tradeoffs, including lack of commit-level vulnerability matching and possible differences where network-backed dependency resolution is needed. Existing ecosystem-native audits remain independent controls until LDW has evidence for safe consolidation.
+This ordering means private/customer dependency files are not present on the runner during the OSV database-bootstrap network phase. Online mode is an explicit opt-in intended primarily for public repositories; private/customer exceptions require a deliberate repository-owner/workstream decision.
 
-`prove-osv-offline-mode.yml` validates the private-repository privacy model using only a runtime synthetic npm lockfile. Database bootstrap is performed before any future private-repository scan contract would be allowed to inspect caller dependency files, and dependency resolution is disabled during bootstrap. The second canary scan uses full `--offline` mode against the locally downloaded database. Scanner output remains suppressed throughout.
+For OSV-Scanner v2.5.0, LDW uses the source-defined `--local-db-path` option to bind the local vulnerability database to an explicit ephemeral runner path. The documented environment/cache-location mechanisms did not direct the database to the expected path in the tested `scan source` flow. Because this option is hidden upstream, OSV-Scanner is pinned and the workflow is self-tested; any scanner upgrade must revalidate this behavior.
 
-The accepted GitHub-hosted Ubuntu proof measured an offline database footprint of **219,428,884 bytes (about 209 MiB)**, a **13-second** database bootstrap, and an **11-second** cached fully offline canary scan. These are point-in-time measurements rather than performance guarantees, but they are reasonable enough to continue toward a reusable privacy-preserving workflow. Future work may cache the database to reduce repeated network transfer while preserving freshness controls.
+The accepted GitHub-hosted Ubuntu offline proof measured an npm vulnerability-database footprint of **219,428,884 bytes (about 209 MiB)**, a **13-second** database bootstrap, and an **11-second** cached fully offline canary scan. These are point-in-time measurements, not performance guarantees. Cache/freshness optimization remains deferred until repeated caller usage makes it worthwhile.
 
-For OSV-Scanner v2.5.0, LDW's proof uses the source-defined `--local-db-path` option to bind the database to an explicit ephemeral runner path. The documented environment/cache-location mechanisms did not direct the database to the expected path in the tested `scan source` flow. Because this option is hidden upstream, LDW pins OSV-Scanner v2.5.0 and requires a self-test; any scanner upgrade must revalidate this compatibility behavior rather than assuming the workaround remains valid.
+### Self-tests and rollout
 
-A reusable dependency workflow may now be developed, but private/customer rollout remains a separate controlled step. The reusable design should default to privacy-preserving offline scanning and retain native ecosystem audits until overlap and coverage are better understood.
+`prove-dependency-scanning.yml` is a thin self-test of the reusable workflow's explicit online path using a runtime-only vulnerable npm canary. `prove-osv-offline-mode.yml` is a thin self-test of the default offline path; offline bootstrap inherently verifies the same vulnerable canary before scanning the control repository.
+
+The reusable workflow has not yet been rolled out to an application repository. Product repositories should adopt it only through their normal workstream/release process and should reference an independently reviewed immutable commit SHA of this repository, never `@main`.
+
+Full offline mode has known coverage tradeoffs, including no commit-level vulnerability matching and possible differences where network-backed dependency resolution would otherwise be used. Those tradeoffs are accepted for the privacy-preserving default and can be reconsidered per repository when justified.
 
 ## Boundaries
 
