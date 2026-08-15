@@ -38,9 +38,22 @@ The reusable secret workflow has been cross-repository validated from the privat
 
 `prove-dependency-scanning.yml` evaluates **OSV-Scanner v2.5.0** as the ecosystem-neutral dependency-vulnerability baseline. The proof downloads the official Linux amd64 release artifact, verifies its pinned SHA-256 digest before execution, and verifies detection against a runtime-only vulnerable lockfile without installing or executing the test package.
 
-OSV-Scanner has had a GitHub Actions output-injection weakness involving attacker-controlled paths. The proof therefore redirects all scanner stdout and stderr to ephemeral runner files that are deleted without being emitted or uploaded; CI exposes only fixed, sanitized pass/fail messages and numeric exit codes. This remains a proof gate, not a reusable private-repository workflow.
+OSV-Scanner has had a GitHub Actions output-injection weakness involving attacker-controlled paths. LDW therefore redirects scanner stdout and stderr to ephemeral runner files that are deleted without being emitted or uploaded; CI exposes only fixed, sanitized pass/fail messages and numeric exit codes. This defense remains in place even as upstream fixes evolve.
 
-The current proof uses OSV's network-backed vulnerability data only with synthetic/public dependency metadata. Before any reusable rollout to private or customer repositories, LDW must explicitly decide the privacy model, including whether offline databases are required, because online scanning can send package names, versions, ecosystems, and file hashes to upstream services. Existing ecosystem-native audits remain independent controls; deduplication and normalized reporting are deferred.
+### Dependency-scan privacy policy
+
+The default LDW policy is:
+
+- **public LDW repositories:** online OSV vulnerability matching is acceptable by default because their dependency metadata is already public;
+- **private LDW and customer repositories:** full OSV `--offline` mode is the default because it does not send project or dependency information to upstream services once the local vulnerability database exists;
+- `--offline-vulnerabilities` is not considered equivalent to full offline mode because other features, including dependency resolution, may still make network requests;
+- exceptions for a private/customer repository require an explicit repository-owner/workstream decision based on the sensitivity of package metadata and the coverage needed.
+
+Full offline mode has coverage tradeoffs, including lack of commit-level vulnerability matching and possible differences where network-backed dependency resolution is needed. Existing ecosystem-native audits remain independent controls until LDW has evidence for safe consolidation.
+
+`prove-osv-offline-mode.yml` measures the npm offline-database bootstrap footprint and verifies a second scan using the cached database in full offline mode. It uses only a runtime synthetic lockfile and reports only database byte size and elapsed time; scanner output remains suppressed.
+
+A reusable dependency workflow will not be authorized until this offline-mode proof is accepted and its GitHub Actions cost/runtime is judged reasonable.
 
 ## Boundaries
 
