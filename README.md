@@ -32,7 +32,15 @@ The workflow downloads the official Linux release binaries directly from their u
 
 `prove-secret-scanning.yml` is a thin self-test for that reusable workflow. It enables a runtime-only synthetic canary so changes to the central implementation must demonstrate that the detector still finds a known test pattern before the control repository accepts them.
 
-Existing repository-specific secret controls remain in place until each product workstream deliberately adopts and validates the reusable baseline. Callers should reference an independently reviewed immutable commit SHA of this repository rather than `@main` or another mutable reference.
+The reusable secret workflow has been cross-repository validated from the private `LowcountryDigitalWorks/business-operations` repository. Existing repository-specific secret controls remain in place until each product workstream deliberately adopts and validates the reusable baseline. Callers should reference an independently reviewed immutable commit SHA of this repository rather than `@main` or another mutable reference.
+
+## Dependency-scanning proof gate
+
+`prove-dependency-scanning.yml` evaluates **OSV-Scanner v2.5.0** as the ecosystem-neutral dependency-vulnerability baseline. The proof downloads the official Linux amd64 release artifact, verifies its pinned SHA-256 digest before execution, and verifies detection against a runtime-only vulnerable lockfile without installing or executing the test package.
+
+OSV-Scanner has had a GitHub Actions output-injection weakness involving attacker-controlled paths. The proof therefore redirects all scanner stdout and stderr to ephemeral runner files that are deleted without being emitted or uploaded; CI exposes only fixed, sanitized pass/fail messages and numeric exit codes. This remains a proof gate, not a reusable private-repository workflow.
+
+The current proof uses OSV's network-backed vulnerability data only with synthetic/public dependency metadata. Before any reusable rollout to private or customer repositories, LDW must explicitly decide the privacy model, including whether offline databases are required, because online scanning can send package names, versions, ecosystems, and file hashes to upstream services. Existing ecosystem-native audits remain independent controls; deduplication and normalized reporting are deferred.
 
 ## Boundaries
 

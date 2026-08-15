@@ -1,0 +1,114 @@
+name: Prove dependency scanning
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  OSV_SCANNER_VERSION: "2.5.0"
+  OSV_SCANNER_SHA256: "edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c"
+
+jobs:
+  dependency-scan-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install verified OSV-Scanner
+        shell: bash
+        run: |
+          set -euo pipefail
+          osv_bin="$RUNNER_TEMP/osv-scanner"
+          url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --output "$osv_bin" "$url"
+          echo "${OSV_SCANNER_SHA256}  ${osv_bin}" | sha256sum --check --strict
+          chmod +x "$osv_bin"
+          "$osv_bin" --version
+          echo "OSV_SCANNER_BIN=$osv_bin" >> "$GITHUB_ENV"
+
+      - name: Verify detector with runtime-only vulnerable lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          canary_dir="$RUNNER_TEMP/osv-canary"
+          canary_log="$RUNNER_TEMP/osv-canary.log"
+          mkdir -p "$canary_dir"
+          cat > "$canary_dir/package-lock.json" <<'JSON'
+          {
+            "name": "ldw-osv-canary",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": {
+                "name": "ldw-osv-canary",
+                "version": "1.0.0",
+                "dependencies": {
+                  "lodash": "4.17.20"
+                }
+              },
+              "node_modules/lodash": {
+                "version": "4.17.20",
+                "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.20.tgz",
+                "integrity": "sha512-PlhdFcillOINfeV7Ni6oF1TAEayyZBoZ8bcshTHqOYJYlrqzRK5hagpagky5o4HfCzzd1TRkXPMFq6cKk9rGmA==",
+                "license": "MIT"
+              }
+            }
+          }
+          JSON
+
+          set +e
+          "$OSV_SCANNER_BIN" scan source \
+            --lockfile="$canary_dir/package-lock.json" \
+            --format=json \
+            >"$canary_log" 2>&1
+          status=$?
+          set -e
+
+          rm -rf "$canary_dir" "$canary_log"
+
+          if [[ "$status" -ne 1 ]]; then
+            echo "OSV-Scanner canary verification failed: expected vulnerability exit code 1, received $status." >&2
+            exit 1
+          fi
+          echo "OSV-Scanner vulnerable-dependency canary verified."
+
+      - name: Scan control repository without exposing scanner output
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_log="$RUNNER_TEMP/osv-scan.log"
+
+          set +e
+          "$OSV_SCANNER_BIN" scan source -r . --format=json >"$scan_log" 2>&1
+          status=$?
+          set -e
+
+          rm -f "$scan_log"
+
+          case "$status" in
+            0)
+              echo "OSV-Scanner dependency scan passed."
+              ;;
+            1)
+              echo "OSV-Scanner detected one or more known dependency vulnerabilities. Scanner output is intentionally suppressed from CI logs." >&2
+              exit 1
+              ;;
+            128)
+              echo "OSV-Scanner found no supported package files in this control repository; repository scan is not applicable."
+              ;;
+            *)
+              echo "OSV-Scanner failed with exit code $status. Scanner output is intentionally suppressed from CI logs." >&2
+              exit "$status"
+              ;;
+          esac
