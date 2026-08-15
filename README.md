@@ -17,6 +17,15 @@ This repository owns or may own, as those capabilities are adopted and validated
 
 Application repositories should eventually consume proven reusable workflows from this repository instead of independently duplicating organization-wide scanners and workflow logic. Reusable workflows should be referenced by reviewed immutable commit SHA rather than mutable references such as `@main`. External GitHub Actions used by LDW workflows should likewise use reviewed full commit SHAs wherever practical.
 
+## Current validation baseline
+
+This repository self-validates its GitHub workflow definitions and starter workflow templates with deterministic open-source tools in GitHub Actions:
+
+- **actionlint v1.7.12** for GitHub Actions syntax and semantic validation; and
+- **zizmor v1.29.0** for static analysis of GitHub Actions security posture.
+
+The workflow downloads the official Linux release binaries directly from their upstream GitHub releases, verifies pinned SHA-256 digests before execution, and runs zizmor in offline mode. No wrapper Action, hosted scanner account, local workstation installation, or recurring subscription is required for this baseline.
+
 ## Boundaries
 
 This repository does **not** own:
