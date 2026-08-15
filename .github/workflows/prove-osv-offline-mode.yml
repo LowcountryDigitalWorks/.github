@@ -78,7 +78,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          download_log="$RUNNER_TEMP/osv-offline-download.log"
+          result_json="$RUNNER_TEMP/osv-offline-download.json"
+          stderr_log="$RUNNER_TEMP/osv-offline-download.stderr"
+          mkdir -p "$OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY"
           start_seconds=$SECONDS
 
           set +e
@@ -87,18 +89,31 @@ jobs:
             --download-offline-databases \
             --lockfile="$OSV_CANARY_DIR/package-lock.json" \
             --format=json \
-            >"$download_log" 2>&1
+            >"$result_json" 2>"$stderr_log"
           status=$?
           set -e
 
           elapsed_seconds=$((SECONDS - start_seconds))
-          rm -f "$download_log"
 
           if [[ "$status" -ne 1 ]]; then
+            rm -f "$result_json" "$stderr_log"
             echo "OSV offline database bootstrap failed: expected vulnerability exit code 1, received $status." >&2
             exit 1
           fi
 
+          if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
+            rm -f "$result_json" "$stderr_log"
+            echo "OSV offline database bootstrap did not produce a valid JSON vulnerability result." >&2
+            exit 1
+          fi
+
+          if ! find "$OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY/osv-scanner" -type f -name all.zip -print -quit | grep -q .; then
+            rm -f "$result_json" "$stderr_log"
+            echo "OSV offline database bootstrap did not create the expected local database structure." >&2
+            exit 1
+          fi
+
+          rm -f "$result_json" "$stderr_log"
           db_bytes="$(du -sb "$OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY" | cut -f1)"
           echo "OSV offline database bootstrap verified."
           echo "Offline database bytes: $db_bytes"
@@ -108,7 +123,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          offline_log="$RUNNER_TEMP/osv-offline-scan.log"
+          result_json="$RUNNER_TEMP/osv-offline-scan.json"
+          stderr_log="$RUNNER_TEMP/osv-offline-scan.stderr"
           start_seconds=$SECONDS
 
           set +e
@@ -116,17 +132,24 @@ jobs:
             --offline \
             --lockfile="$OSV_CANARY_DIR/package-lock.json" \
             --format=json \
-            >"$offline_log" 2>&1
+            >"$result_json" 2>"$stderr_log"
           status=$?
           set -e
 
           elapsed_seconds=$((SECONDS - start_seconds))
-          rm -rf "$OSV_CANARY_DIR" "$offline_log"
 
           if [[ "$status" -ne 1 ]]; then
+            rm -rf "$OSV_CANARY_DIR" "$result_json" "$stderr_log"
             echo "OSV cached offline scan failed: expected vulnerability exit code 1, received $status." >&2
             exit 1
           fi
 
+          if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
+            rm -rf "$OSV_CANARY_DIR" "$result_json" "$stderr_log"
+            echo "OSV cached offline scan did not produce a valid JSON vulnerability result." >&2
+            exit 1
+          fi
+
+          rm -rf "$OSV_CANARY_DIR" "$result_json" "$stderr_log"
           echo "OSV cached fully offline detector verified."
           echo "Cached offline scan seconds: $elapsed_seconds"
