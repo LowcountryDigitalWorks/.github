@@ -56,9 +56,24 @@ The accepted GitHub-hosted Ubuntu offline proof measured an npm vulnerability-da
 
 `prove-dependency-scanning.yml` is a thin self-test of the reusable workflow's explicit online path using a runtime-only vulnerable npm canary. `prove-osv-offline-mode.yml` is a thin self-test of the default offline path; offline bootstrap inherently verifies the same vulnerable canary before scanning the control repository.
 
-The reusable workflow has not yet been rolled out to an application repository. Product repositories should adopt it only through their normal workstream/release process and should reference an independently reviewed immutable commit SHA of this repository, never `@main`.
+The reusable workflow was first adopted by the public `LowcountryDigitalWorks/secure-exchange` application repository through PR #17. That caller references the independently reviewed central commit `ebf64d4e7fb2bb6bab287601bb516612768a6a20`, explicitly opts into online queries because the repository and its dependency metadata are public, and leaves the repository's existing CI and native dependency checks independent.
 
 Full offline mode has known coverage tradeoffs, including no commit-level vulnerability matching and possible differences where network-backed dependency resolution would otherwise be used. Those tradeoffs are accepted for the privacy-preserving default and can be reconsidered per repository when justified.
+
+## Cross-repository CI adoption governance
+
+The Developer Tooling & CI Orchestrator may independently review and merge a narrow additive CI/governance caller change into an LDW product repository without separate Product Orchestrator concurrence when all of the following remain true:
+
+- the change consumes an already proven central workflow or control pinned to an independently reviewed immutable commit SHA;
+- the product-repository change is limited to additive workflow/governance glue and does not alter product code, dependencies, runtime behavior, architecture, provider choices, deployment assumptions, or authorized release scope;
+- the change does not add, remove, rename, weaken, or otherwise alter the semantics of product-required checks, branch/release gates, or product-specific security/privacy invariants;
+- permissions remain least-privilege and the caller introduces no new secret, customer-data, PHI, or consequential external-service flow unless separately approved;
+- live base, exact candidate head/tree, changed files, existing product CI, the new central check, and review-thread state are independently verified before merge; and
+- repository-local governance does not impose a stricter concurrence requirement.
+
+Product Orchestrator concurrence is required before merge whenever a proposed adoption changes product-required checks or release sequencing, product architecture or runtime/deployment assumptions, dependencies, product-specific security/privacy invariants, or repository governance. A narrow direct merge under Developer Tooling & CI authority should still be followed by a concise informational handoff to the affected Product Orchestrator so product state remains current.
+
+This rule governs only reusable CI/control adoption. It does not transfer product release, architecture, runtime, deployment, or customer-data authority to the Developer Tooling & CI workstream.
 
 ## Boundaries
 
