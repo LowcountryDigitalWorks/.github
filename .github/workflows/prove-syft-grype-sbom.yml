@@ -123,7 +123,7 @@ jobs:
 
           set +e
           "$SYFT_BIN" "$canary_dir" \
-            --select-catalogers javascript-package-cataloger \
+            --select-catalogers javascript \
             -o "syft-json=$syft_json" \
             -o "cyclonedx-json@1.6=$cdx_json" \
             >/dev/null 2>"$syft_err"
