@@ -107,9 +107,9 @@ jobs:
 
           proof_dir="$RUNNER_TEMP/syft-grype-proof"
           canary_dir="$proof_dir/canary"
-          mkdir -p "$canary_dir"
+          mkdir -p "$canary_dir/node_modules/lodash"
 
-          cat > "$canary_dir/package.json" <<'JSON'
+          cat > "$canary_dir/node_modules/lodash/package.json" <<'JSON'
           {
             "name": "lodash",
             "version": "4.17.20",
@@ -123,6 +123,7 @@ jobs:
 
           set +e
           "$SYFT_BIN" "$canary_dir" \
+            --select-catalogers javascript-package-cataloger \
             -o "syft-json=$syft_json" \
             -o "cyclonedx-json@1.6=$cdx_json" \
             >/dev/null 2>"$syft_err"
@@ -136,8 +137,17 @@ jobs:
           fi
           rm -f "$syft_err"
 
-          jq -e '(.artifacts // []) | any(.[]; .name == "lodash" and .version == "4.17.20")' "$syft_json" >/dev/null
-          jq -e '.specVersion == "1.6" and ((.components // []) | any(.[]; .name == "lodash" and .version == "4.17.20"))' "$cdx_json" >/dev/null
+          if ! jq -e '(.artifacts // []) | any(.[]; .name == "lodash" and .version == "4.17.20")' "$syft_json" >/dev/null; then
+            echo "Native Syft JSON did not contain the expected synthetic filesystem package." >&2
+            exit 1
+          fi
+          echo "Native Syft JSON filesystem inventory verified."
+
+          if ! jq -e '.specVersion == "1.6" and ((.components // []) | any(.[]; .name == "lodash" and .version == "4.17.20"))' "$cdx_json" >/dev/null; then
+            echo "CycloneDX JSON 1.6 did not contain the expected synthetic filesystem package." >&2
+            exit 1
+          fi
+          echo "CycloneDX JSON 1.6 filesystem inventory verified."
 
           syft_grype="$proof_dir/canary.grype.syft.json"
           cdx_grype="$proof_dir/canary.grype.cdx.json"
@@ -158,6 +168,12 @@ jobs:
           fi
           rm -f "$syft_grype_err"
 
+          if ! jq -e '(.matches // []) | any(.[]; .artifact.name == "lodash" and .artifact.version == "4.17.20")' "$syft_grype" >/dev/null; then
+            echo "Native Syft JSON path did not preserve the expected vulnerable canary condition." >&2
+            exit 1
+          fi
+          echo "Native Syft JSON Grype canary detection verified."
+
           start_seconds=$SECONDS
           set +e
           "$GRYPE_BIN" "sbom:$cdx_json" -o json >"$cdx_grype" 2>"$cdx_grype_err"
@@ -172,15 +188,11 @@ jobs:
           fi
           rm -f "$cdx_grype_err"
 
-          if ! jq -e '(.matches // []) | any(.[]; .artifact.name == "lodash" and .artifact.version == "4.17.20")' "$syft_grype" >/dev/null; then
-            echo "Native Syft JSON path did not preserve the expected vulnerable canary condition." >&2
-            exit 1
-          fi
-
           if ! jq -e '(.matches // []) | any(.[]; .artifact.name == "lodash" and .artifact.version == "4.17.20")' "$cdx_grype" >/dev/null; then
             echo "CycloneDX JSON path did not preserve the expected vulnerable canary condition." >&2
             exit 1
           fi
+          echo "CycloneDX JSON Grype canary detection verified."
 
           syft_normalized="$proof_dir/canary.grype.syft.normalized.json"
           cdx_normalized="$proof_dir/canary.grype.cdx.normalized.json"
