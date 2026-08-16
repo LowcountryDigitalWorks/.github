@@ -107,9 +107,9 @@ jobs:
 
           proof_dir="$RUNNER_TEMP/syft-grype-proof"
           canary_dir="$proof_dir/canary"
-          mkdir -p "$canary_dir/node_modules/lodash"
+          mkdir -p "$canary_dir"
 
-          cat > "$canary_dir/node_modules/lodash/package.json" <<'JSON'
+          cat > "$canary_dir/package.json" <<'JSON'
           {
             "name": "lodash",
             "version": "4.17.20",
