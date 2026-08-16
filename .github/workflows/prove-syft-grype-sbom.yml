@@ -56,9 +56,11 @@ jobs:
           grype_db="$RUNNER_TEMP/grype-db"
           mkdir -p "$grype_db"
 
-          echo "SYFT_BIN=$syft_bin" >> "$GITHUB_ENV"
-          echo "GRYPE_BIN=$grype_bin" >> "$GITHUB_ENV"
-          echo "GRYPE_DB_CACHE_DIR=$grype_db" >> "$GITHUB_ENV"
+          {
+            echo "SYFT_BIN=$syft_bin"
+            echo "GRYPE_BIN=$grype_bin"
+            echo "GRYPE_DB_CACHE_DIR=$grype_db"
+          } >> "$GITHUB_ENV"
 
       - name: Bootstrap Grype vulnerability database before checkout
         shell: bash
@@ -92,9 +94,11 @@ jobs:
           echo "Grype database bytes: $db_bytes"
           echo "Grype database bootstrap seconds: $elapsed_seconds"
 
-          echo "GRYPE_DB_AUTO_UPDATE=false" >> "$GITHUB_ENV"
-          echo "GRYPE_CHECK_FOR_APP_UPDATE=false" >> "$GITHUB_ENV"
-          echo "SYFT_CHECK_FOR_APP_UPDATE=false" >> "$GITHUB_ENV"
+          {
+            echo "GRYPE_DB_AUTO_UPDATE=false"
+            echo "GRYPE_CHECK_FOR_APP_UPDATE=false"
+            echo "SYFT_CHECK_FOR_APP_UPDATE=false"
+          } >> "$GITHUB_ENV"
 
       - name: Prove vulnerable filesystem canary and SBOM-format behavior
         shell: bash
