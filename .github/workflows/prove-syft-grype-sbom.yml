@@ -1,0 +1,279 @@
+name: Prove Syft and Grype SBOM scanning
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/prove-syft-grype-sbom.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/prove-syft-grype-sbom.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SYFT_VERSION: "1.51.0"
+  SYFT_SHA256: "2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f"
+  GRYPE_VERSION: "0.117.0"
+  GRYPE_SHA256: "38525dab1e06f162ebaa02f94d82d1f807076b011a44180cf2777edf1a7b9c26"
+
+jobs:
+  sbom-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install verified Syft and Grype before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          syft_archive="$RUNNER_TEMP/syft.tar.gz"
+          syft_dir="$RUNNER_TEMP/syft-bin"
+          syft_url="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --output "$syft_archive" "$syft_url"
+          echo "${SYFT_SHA256}  ${syft_archive}" | sha256sum --check --strict
+          mkdir -p "$syft_dir"
+          tar -xzf "$syft_archive" -C "$syft_dir"
+          syft_bin="$(find "$syft_dir" -type f -name syft -print -quit)"
+          test -n "$syft_bin"
+          chmod +x "$syft_bin"
+          "$syft_bin" version >/dev/null
+
+          grype_archive="$RUNNER_TEMP/grype.tar.gz"
+          grype_dir="$RUNNER_TEMP/grype-bin"
+          grype_url="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error --output "$grype_archive" "$grype_url"
+          echo "${GRYPE_SHA256}  ${grype_archive}" | sha256sum --check --strict
+          mkdir -p "$grype_dir"
+          tar -xzf "$grype_archive" -C "$grype_dir"
+          grype_bin="$(find "$grype_dir" -type f -name grype -print -quit)"
+          test -n "$grype_bin"
+          chmod +x "$grype_bin"
+          "$grype_bin" version >/dev/null
+
+          grype_db="$RUNNER_TEMP/grype-db"
+          mkdir -p "$grype_db"
+
+          echo "SYFT_BIN=$syft_bin" >> "$GITHUB_ENV"
+          echo "GRYPE_BIN=$grype_bin" >> "$GITHUB_ENV"
+          echo "GRYPE_DB_CACHE_DIR=$grype_db" >> "$GITHUB_ENV"
+
+      - name: Bootstrap Grype vulnerability database before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_log="$RUNNER_TEMP/grype-db-update.log"
+          start_seconds=$SECONDS
+
+          set +e
+          "$GRYPE_BIN" db update >"$db_log" 2>&1
+          status=$?
+          set -e
+
+          elapsed_seconds=$((SECONDS - start_seconds))
+          if [[ "$status" -ne 0 ]]; then
+            rm -f "$db_log"
+            echo "Grype database bootstrap failed with exit code $status. Raw output is intentionally suppressed." >&2
+            exit 1
+          fi
+
+          if ! find "$GRYPE_DB_CACHE_DIR" -type f -print -quit | grep -q .; then
+            rm -f "$db_log"
+            echo "Grype database bootstrap did not populate the explicit runner-temporary cache directory." >&2
+            exit 1
+          fi
+
+          db_bytes="$(du -sb "$GRYPE_DB_CACHE_DIR" | cut -f1)"
+          rm -f "$db_log"
+
+          echo "Grype database bootstrap verified."
+          echo "Grype database bytes: $db_bytes"
+          echo "Grype database bootstrap seconds: $elapsed_seconds"
+
+          echo "GRYPE_DB_AUTO_UPDATE=false" >> "$GITHUB_ENV"
+          echo "GRYPE_CHECK_FOR_APP_UPDATE=false" >> "$GITHUB_ENV"
+          echo "SYFT_CHECK_FOR_APP_UPDATE=false" >> "$GITHUB_ENV"
+
+      - name: Prove vulnerable filesystem canary and SBOM-format behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          proof_dir="$RUNNER_TEMP/syft-grype-proof"
+          canary_dir="$proof_dir/canary"
+          mkdir -p "$canary_dir/node_modules/lodash"
+
+          cat > "$canary_dir/node_modules/lodash/package.json" <<'JSON'
+          {
+            "name": "lodash",
+            "version": "4.17.20",
+            "license": "MIT"
+          }
+          JSON
+
+          syft_json="$proof_dir/canary.syft.json"
+          cdx_json="$proof_dir/canary.cdx.json"
+          syft_err="$proof_dir/canary.syft.stderr"
+
+          set +e
+          "$SYFT_BIN" "$canary_dir" \
+            -o "syft-json=$syft_json" \
+            -o "cyclonedx-json@1.6=$cdx_json" \
+            >/dev/null 2>"$syft_err"
+          syft_status=$?
+          set -e
+
+          if [[ "$syft_status" -ne 0 ]]; then
+            rm -f "$syft_err"
+            echo "Syft canary inventory failed with exit code $syft_status. Raw output is intentionally suppressed." >&2
+            exit 1
+          fi
+          rm -f "$syft_err"
+
+          jq -e '(.artifacts // []) | any(.[]; .name == "lodash" and .version == "4.17.20")' "$syft_json" >/dev/null
+          jq -e '.specVersion == "1.6" and ((.components // []) | any(.[]; .name == "lodash" and .version == "4.17.20"))' "$cdx_json" >/dev/null
+
+          syft_grype="$proof_dir/canary.grype.syft.json"
+          cdx_grype="$proof_dir/canary.grype.cdx.json"
+          syft_grype_err="$proof_dir/canary.grype.syft.stderr"
+          cdx_grype_err="$proof_dir/canary.grype.cdx.stderr"
+
+          start_seconds=$SECONDS
+          set +e
+          "$GRYPE_BIN" "sbom:$syft_json" -o json >"$syft_grype" 2>"$syft_grype_err"
+          syft_grype_status=$?
+          set -e
+          syft_scan_seconds=$((SECONDS - start_seconds))
+
+          if [[ "$syft_grype_status" -ne 0 ]]; then
+            rm -f "$syft_grype_err"
+            echo "Grype native-Syft-JSON canary scan failed with exit code $syft_grype_status. Raw output is intentionally suppressed." >&2
+            exit 1
+          fi
+          rm -f "$syft_grype_err"
+
+          start_seconds=$SECONDS
+          set +e
+          "$GRYPE_BIN" "sbom:$cdx_json" -o json >"$cdx_grype" 2>"$cdx_grype_err"
+          cdx_grype_status=$?
+          set -e
+          cdx_scan_seconds=$((SECONDS - start_seconds))
+
+          if [[ "$cdx_grype_status" -ne 0 ]]; then
+            rm -f "$cdx_grype_err"
+            echo "Grype CycloneDX canary scan failed with exit code $cdx_grype_status. Raw output is intentionally suppressed." >&2
+            exit 1
+          fi
+          rm -f "$cdx_grype_err"
+
+          if ! jq -e '(.matches // []) | any(.[]; .artifact.name == "lodash" and .artifact.version == "4.17.20")' "$syft_grype" >/dev/null; then
+            echo "Native Syft JSON path did not preserve the expected vulnerable canary condition." >&2
+            exit 1
+          fi
+
+          if ! jq -e '(.matches // []) | any(.[]; .artifact.name == "lodash" and .artifact.version == "4.17.20")' "$cdx_grype" >/dev/null; then
+            echo "CycloneDX JSON path did not preserve the expected vulnerable canary condition." >&2
+            exit 1
+          fi
+
+          syft_normalized="$proof_dir/canary.grype.syft.normalized.json"
+          cdx_normalized="$proof_dir/canary.grype.cdx.normalized.json"
+
+          jq -S '[.matches[]? | select(.artifact.name == "lodash" and .artifact.version == "4.17.20") | {package: .artifact.name, version: .artifact.version, vulnerability: .vulnerability.id}] | unique | sort_by(.package, .version, .vulnerability)' "$syft_grype" >"$syft_normalized"
+          jq -S '[.matches[]? | select(.artifact.name == "lodash" and .artifact.version == "4.17.20") | {package: .artifact.name, version: .artifact.version, vulnerability: .vulnerability.id}] | unique | sort_by(.package, .version, .vulnerability)' "$cdx_grype" >"$cdx_normalized"
+
+          syft_match_count="$(jq 'length' "$syft_normalized")"
+          cdx_match_count="$(jq 'length' "$cdx_normalized")"
+
+          echo "Vulnerable filesystem canary detected through both SBOM formats."
+          echo "Native Syft JSON normalized canary matches: $syft_match_count"
+          echo "CycloneDX JSON 1.6 normalized canary matches: $cdx_match_count"
+          echo "Native Syft JSON Grype scan seconds: $syft_scan_seconds"
+          echo "CycloneDX JSON Grype scan seconds: $cdx_scan_seconds"
+
+          if cmp -s "$syft_normalized" "$cdx_normalized"; then
+            echo "Canary format parity: equivalent."
+          else
+            echo "Canary format parity: divergent; native Syft JSON remains the primary internal Grype analysis representation."
+          fi
+
+      - name: Check out control repository after network bootstrap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Inventory and evaluate control repository without exposing raw output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          proof_dir="$RUNNER_TEMP/syft-grype-proof"
+          repo_syft="$proof_dir/control.syft.json"
+          repo_cdx="$proof_dir/control.cdx.json"
+          repo_syft_err="$proof_dir/control.syft.stderr"
+
+          set +e
+          "$SYFT_BIN" . \
+            -o "syft-json=$repo_syft" \
+            -o "cyclonedx-json@1.6=$repo_cdx" \
+            >/dev/null 2>"$repo_syft_err"
+          syft_status=$?
+          set -e
+
+          if [[ "$syft_status" -ne 0 ]]; then
+            rm -f "$repo_syft_err"
+            echo "Syft control-repository inventory failed with exit code $syft_status. Raw output is intentionally suppressed." >&2
+            exit 1
+          fi
+          rm -f "$repo_syft_err"
+
+          jq -e '.artifacts | type == "array"' "$repo_syft" >/dev/null
+          jq -e '.specVersion == "1.6" and ((.components // []) | type == "array")' "$repo_cdx" >/dev/null
+          package_count="$(jq '(.artifacts // []) | length' "$repo_syft")"
+
+          repo_grype="$proof_dir/control.grype.json"
+          repo_grype_err="$proof_dir/control.grype.stderr"
+          start_seconds=$SECONDS
+          set +e
+          "$GRYPE_BIN" "sbom:$repo_syft" -o json >"$repo_grype" 2>"$repo_grype_err"
+          grype_status=$?
+          set -e
+          scan_seconds=$((SECONDS - start_seconds))
+
+          if [[ "$grype_status" -ne 0 ]]; then
+            rm -f "$repo_grype_err"
+            echo "Grype control-repository scan failed with exit code $grype_status. Raw output is intentionally suppressed." >&2
+            exit 1
+          fi
+          rm -f "$repo_grype_err"
+
+          jq -e '.matches | type == "array"' "$repo_grype" >/dev/null
+          match_count="$(jq '(.matches // []) | length' "$repo_grype")"
+
+          if [[ "$package_count" -eq 0 ]]; then
+            echo "Control-repository inventory: not applicable; no cataloged packages were found."
+          else
+            echo "Control-repository cataloged packages: $package_count"
+            echo "Control-repository Grype vulnerability matches: $match_count"
+          fi
+          echo "Control-repository native-Syft-JSON Grype scan seconds: $scan_seconds"
+
+      - name: Remove all proof SBOM and scanner outputs
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf \
+            "$RUNNER_TEMP/syft-grype-proof" \
+            "$RUNNER_TEMP/syft-bin" \
+            "$RUNNER_TEMP/grype-bin" \
+            "$RUNNER_TEMP/grype-db" \
+            "$RUNNER_TEMP/syft.tar.gz" \
+            "$RUNNER_TEMP/grype.tar.gz" \
+            "$RUNNER_TEMP/grype-db-update.log"
+
+          test ! -e "$RUNNER_TEMP/syft-grype-proof"
+          test ! -e "$RUNNER_TEMP/grype-db"
+          echo "Temporary SBOM, scanner-report, and vulnerability-database proof data removed."
