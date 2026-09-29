@@ -60,6 +60,27 @@ The reusable workflow was first adopted by the public `LowcountryDigitalWorks/se
 
 Full offline mode has known coverage tradeoffs, including no commit-level vulnerability matching and possible differences where network-backed dependency resolution would otherwise be used. Those tradeoffs are accepted for the privacy-preserving default and can be reconsidered per repository when justified.
 
+## Reusable JavaScript/TypeScript SAST baseline
+
+`security-codeql-js.yml` provides LDW's reusable source-code static analysis baseline for public JavaScript/TypeScript repositories using GitHub CodeQL.
+
+The workflow:
+
+- runs CodeQL's `javascript-typescript` analysis with the `security-extended` query suite;
+- uses read-only repository contents permission plus the minimum `security-events: write` permission required to publish code-scanning results;
+- uses no repository secrets;
+- pins `actions/checkout` and `github/codeql-action` to reviewed immutable commit SHAs;
+- leaves caller repositories responsible for trigger cadence, application tests, dependency/secret scans, and remediation workflow.
+
+Initial caller guidance:
+
+- run on pull requests and default-branch pushes so vulnerable source changes are caught before/when accepted;
+- run on a low-frequency recurring schedule (weekly is normally sufficient for SAST query updates; dependency redisclosure is owned separately by OSV/npm audit);
+- keep application-specific functional, security-functional, regression, browser, accessibility, and smoke tests in the owning repository;
+- treat CodeQL as an additive SAST layer, not a replacement for dependency scanning, secret scanning, DAST, or behavioral tests.
+
+For client-owned repositories, prefer an equivalent client-owned workflow or reusable workflow rather than creating a permanent dependency on LDW-controlled infrastructure.
+
 ## Cross-repository CI adoption governance
 
 The Developer Tooling & CI Orchestrator may independently review and merge a narrow additive CI/governance caller change into an LDW product repository without separate Product Orchestrator concurrence when all of the following remain true:
