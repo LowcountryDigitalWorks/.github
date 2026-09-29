@@ -1,0 +1,6 @@
+{
+  "name": "LDW JavaScript website security baseline",
+  "description": "Adds pinned OSV dependency scanning, Betterleaks history scanning, and CodeQL SAST for public JavaScript/TypeScript websites.",
+  "iconName": "octicon shield-check",
+  "categories": ["Security", "Code quality"]
+}

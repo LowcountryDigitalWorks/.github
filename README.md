@@ -81,6 +81,22 @@ Initial caller guidance:
 
 For client-owned repositories, prefer an equivalent client-owned workflow or reusable workflow rather than creating a permanent dependency on LDW-controlled infrastructure.
 
+## JavaScript website security starter
+
+`workflow-templates/javascript-website-security.yml` is the organization starter wrapper for new LDW-owned public JavaScript/TypeScript websites.
+
+It composes the accepted reusable controls pinned to independently reviewed immutable central commit `a377e52ba698e93d012aa553e4de4af39ba75799`:
+
+- OSV-Scanner dependency matching on pull requests, main pushes, daily schedule, and manual dispatch;
+- Betterleaks full-history secret scanning on repository changes;
+- CodeQL `security-extended` SAST on pull requests, main pushes, weekly schedule, and manual dispatch.
+
+The starter is intentionally security-only. Site-specific functional, security-functional/input-validation, browser/accessibility, regression, performance, and deployed-site smoke tests stay in the owning website repository.
+
+For repositories where LDW has repository-administration authority, pair the CodeQL workflow with code-scanning merge protection at an initially calibrated threshold of HIGH-or-higher security alerts and ordinary error-level alerts. Do not treat a successful CodeQL workflow run as proof that no alerts were created.
+
+This starter is appropriate for LDW-owned repositories. For client-owned production repositories, prefer an equivalent customer-owned workflow or customer-owned reusable control during handoff rather than making the customer's long-term security pipeline depend indefinitely on LDW-owned infrastructure.
+
 ## Cross-repository CI adoption governance
 
 The Developer Tooling & CI Orchestrator may independently review and merge a narrow additive CI/governance caller change into an LDW product repository without separate Product Orchestrator concurrence when all of the following remain true:
