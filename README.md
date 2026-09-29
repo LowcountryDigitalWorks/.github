@@ -97,6 +97,10 @@ For repositories where LDW has repository-administration authority, pair the Cod
 
 This starter is appropriate for LDW-owned repositories. For client-owned production repositories, prefer an equivalent customer-owned workflow or customer-owned reusable control during handoff rather than making the customer's long-term security pipeline depend indefinitely on LDW-owned infrastructure.
 
+### Starter workflow PR-efficiency policy
+
+LDW starter workflows use a draft/ready pull-request pattern to conserve hosted runner capacity without weakening final validation. Draft pull-request jobs skip before runner allocation; `ready_for_review` triggers the full applicable checks; later synchronizes while ready continue validation; and PR-only concurrency cancels obsolete in-progress runs when a newer commit supersedes them. Default-branch push validation remains enabled and is not cancelled by this efficiency policy. Scheduled and manual security checks retain their existing behavior.
+
 ## Cross-repository CI adoption governance
 
 The Developer Tooling & CI Orchestrator may independently review and merge a narrow additive CI/governance caller change into an LDW product repository without separate Product Orchestrator concurrence when all of the following remain true:
