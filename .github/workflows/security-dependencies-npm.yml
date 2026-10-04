@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      accepted_findings_file:
+        description: Repository-relative path to an already-approved LDW dependency disposition JSON file. Empty preserves blanket vulnerability failure.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -41,6 +46,606 @@ jobs:
           mkdir -p "$db_root"
           echo "OSV_SCANNER_BIN=$osv_bin" >> "$GITHUB_ENV"
           echo "OSV_DB_ROOT=$db_root" >> "$GITHUB_ENV"
+
+      - name: Prepare fail-closed approved-disposition evaluator
+        shell: bash
+        run: |
+          set -euo pipefail
+          evaluator="$RUNNER_TEMP/ldw-osv-disposition-gate.py"
+          cat > "$evaluator" <<'PY'
+          import argparse
+          import copy
+          import datetime as dt
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          GHSA_RE = re.compile(r"^GHSA-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$")
+          DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+          NON_BLOCKING_RESIDUAL = {"informational", "low", "moderate"}
+          TOP_LEVEL_KEYS = {"schemaVersion", "acceptances"}
+          ACCEPTANCE_KEYS = {
+              "id",
+              "finding",
+              "scope",
+              "sourceSeverity",
+              "issue",
+              "approvedOn",
+              "expiresAfter",
+              "residualRisk",
+              "rationale",
+              "packages",
+          }
+          PACKAGE_REQUIRED_KEYS = {"nodes", "isDirect"}
+          PACKAGE_OPTIONAL_KEYS = {"advisoryUrl", "viaPackages"}
+
+          class GateError(Exception):
+              pass
+
+          def require(condition, message):
+              if not condition:
+                  raise GateError(message)
+
+          def canonical_string(value, field):
+              require(isinstance(value, str), f"{field} must be a string")
+              require(value == value.strip() and value != "", f"{field} must be non-blank and canonical")
+              return value
+
+          def unique_nonblank_strings(value, field):
+              require(isinstance(value, list) and len(value) > 0, f"{field} must be a non-empty array")
+              normalized = []
+              seen = set()
+              for item in value:
+                  item = canonical_string(item, field)
+                  require(item not in seen, f"{field} must not contain duplicates")
+                  seen.add(item)
+                  normalized.append(item)
+              return normalized
+
+          def parse_date(value, field):
+              value = canonical_string(value, field)
+              require(DATE_RE.fullmatch(value) is not None, f"{field} must use YYYY-MM-DD")
+              try:
+                  parsed = dt.date.fromisoformat(value)
+              except ValueError as exc:
+                  raise GateError(f"{field} must be a real calendar date") from exc
+              require(parsed.isoformat() == value, f"{field} must be canonical")
+              return parsed
+
+          def no_duplicate_object_pairs(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise GateError("JSON objects must not contain duplicate keys")
+                  result[key] = value
+              return result
+
+          def load_json(path):
+              try:
+                  with open(path, "r", encoding="utf-8") as handle:
+                      return json.load(handle, object_pairs_hook=no_duplicate_object_pairs)
+              except GateError:
+                  raise
+              except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                  raise GateError("JSON file is missing, unreadable, or malformed") from exc
+
+          def validate_policy(data, repo, today):
+              require(isinstance(data, dict), "policy root must be an object")
+              require(set(data.keys()) == TOP_LEVEL_KEYS, "policy root keys do not match schemaVersion 1")
+              require(
+                  data.get("schemaVersion") == 1 and not isinstance(data.get("schemaVersion"), bool),
+                  "schemaVersion must equal 1",
+              )
+              acceptances = data.get("acceptances")
+              require(isinstance(acceptances, list), "acceptances must be an array")
+
+              issue_re = re.compile(
+                  r"^https://github\.com/" + re.escape(repo) + r"/issues/[1-9][0-9]*$"
+              )
+              seen_ids = set()
+              normalized = []
+
+              for index, acceptance in enumerate(acceptances):
+                  prefix = f"acceptances[{index}]"
+                  require(isinstance(acceptance, dict), f"{prefix} must be an object")
+                  require(
+                      set(acceptance.keys()) == ACCEPTANCE_KEYS,
+                      f"{prefix} keys do not match the approved schema",
+                  )
+
+                  acceptance_id = canonical_string(acceptance["id"], f"{prefix}.id")
+                  require(acceptance_id not in seen_ids, "acceptance IDs must be unique")
+                  seen_ids.add(acceptance_id)
+
+                  finding = canonical_string(acceptance["finding"], f"{prefix}.finding")
+                  require(
+                      GHSA_RE.fullmatch(finding) is not None,
+                      f"{prefix}.finding must be a canonical GHSA identifier",
+                  )
+                  require(acceptance["scope"] == "build-dev", f"{prefix}.scope must equal build-dev")
+                  require(
+                      acceptance["sourceSeverity"] == "high",
+                      f"{prefix}.sourceSeverity must equal high",
+                  )
+
+                  issue = canonical_string(acceptance["issue"], f"{prefix}.issue")
+                  require(
+                      issue_re.fullmatch(issue) is not None,
+                      f"{prefix}.issue must be a canonical issue URL in the caller repository",
+                  )
+
+                  approved = parse_date(acceptance["approvedOn"], f"{prefix}.approvedOn")
+                  expires = parse_date(acceptance["expiresAfter"], f"{prefix}.expiresAfter")
+                  require(approved <= expires, f"{prefix} approval window is inverted")
+                  require(today >= approved, f"{prefix} is not yet approved")
+                  require(today <= expires, f"{prefix} is expired")
+
+                  residual = acceptance["residualRisk"]
+                  require(
+                      residual in NON_BLOCKING_RESIDUAL,
+                      f"{prefix}.residualRisk is not in the non-blocking set",
+                  )
+                  rationale = canonical_string(acceptance["rationale"], f"{prefix}.rationale")
+                  require(len(rationale) <= 2000, f"{prefix}.rationale exceeds 2000 characters")
+
+                  packages = acceptance["packages"]
+                  require(
+                      isinstance(packages, dict) and len(packages) > 0,
+                      f"{prefix}.packages must be a non-empty object",
+                  )
+
+                  normalized_packages = {}
+                  advisory_binding_count = 0
+                  for package_name, spec in packages.items():
+                      package_name = canonical_string(package_name, f"{prefix}.packages name")
+                      require(
+                          isinstance(spec, dict),
+                          f"{prefix}.packages[{package_name}] must be an object",
+                      )
+                      keys = set(spec.keys())
+                      require(
+                          PACKAGE_REQUIRED_KEYS.issubset(keys),
+                          f"{prefix}.packages[{package_name}] is missing required metadata",
+                      )
+                      require(
+                          keys.issubset(PACKAGE_REQUIRED_KEYS | PACKAGE_OPTIONAL_KEYS),
+                          f"{prefix}.packages[{package_name}] contains unsupported metadata",
+                      )
+                      require(
+                          type(spec["isDirect"]) is bool,
+                          f"{prefix}.packages[{package_name}].isDirect must be boolean",
+                      )
+                      unique_nonblank_strings(
+                          spec["nodes"],
+                          f"{prefix}.packages[{package_name}].nodes",
+                      )
+
+                      has_advisory_url = "advisoryUrl" in spec
+                      has_via_packages = "viaPackages" in spec
+                      require(
+                          has_advisory_url != has_via_packages,
+                          f"{prefix}.packages[{package_name}] must define exactly one of advisoryUrl or viaPackages",
+                      )
+
+                      if has_via_packages:
+                          unique_nonblank_strings(
+                              spec["viaPackages"],
+                              f"{prefix}.packages[{package_name}].viaPackages",
+                          )
+
+                      if has_advisory_url:
+                          advisory = canonical_string(
+                              spec["advisoryUrl"],
+                              f"{prefix}.packages[{package_name}].advisoryUrl",
+                          )
+                          require(
+                              advisory == f"https://github.com/advisories/{finding}",
+                              f"{prefix}.packages[{package_name}].advisoryUrl does not match finding",
+                          )
+                          advisory_binding_count += 1
+
+                      normalized_packages[package_name] = True
+
+                  require(
+                      advisory_binding_count == 1,
+                      f"{prefix} must bind exactly one package directly to its GHSA advisory",
+                  )
+
+                  normalized.append(
+                      {
+                          "id": acceptance_id,
+                          "finding": finding,
+                          "issue": issue,
+                          "expiresAfter": acceptance["expiresAfter"],
+                          "packages": normalized_packages,
+                      }
+                  )
+
+              return normalized
+
+          def resolve_policy_path(workspace, raw_path):
+              raw_path = canonical_string(raw_path, "accepted_findings_file")
+              candidate_input = pathlib.Path(raw_path)
+              require(
+                  not candidate_input.is_absolute(),
+                  "accepted_findings_file must be repository-relative",
+              )
+              workspace_path = pathlib.Path(workspace).resolve(strict=True)
+              try:
+                  candidate = (workspace_path / candidate_input).resolve(strict=True)
+              except OSError as exc:
+                  raise GateError("accepted_findings_file does not resolve to a file") from exc
+              try:
+                  relative = candidate.relative_to(workspace_path)
+              except ValueError as exc:
+                  raise GateError(
+                      "accepted_findings_file resolves outside the caller workspace"
+                  ) from exc
+              require(
+                  len(relative.parts) > 0 and relative.parts[0] != ".git",
+                  "accepted_findings_file must point to repository-controlled content",
+              )
+              require(
+                  candidate.is_file(),
+                  "accepted_findings_file must resolve to a regular file",
+              )
+              return candidate
+
+          def extract_vulnerabilities(payloads):
+              findings = []
+              for payload in payloads:
+                  require(isinstance(payload, dict), "scanner payload root must be an object")
+                  results = payload.get("results")
+                  require(isinstance(results, list), "scanner payload results must be an array")
+                  for result in results:
+                      require(isinstance(result, dict), "scanner result must be an object")
+                      packages = result.get("packages")
+                      require(
+                          isinstance(packages, list),
+                          "scanner result packages must be an array",
+                      )
+                      for package_entry in packages:
+                          require(
+                              isinstance(package_entry, dict),
+                              "scanner package entry must be an object",
+                          )
+                          package = package_entry.get("package")
+                          require(
+                              isinstance(package, dict),
+                              "scanner package identity must be an object",
+                          )
+                          package_name = canonical_string(
+                              package.get("name"),
+                              "scanner package name",
+                          )
+                          vulnerabilities = package_entry.get("vulnerabilities", [])
+                          require(
+                              isinstance(vulnerabilities, list),
+                              "scanner vulnerabilities must be an array",
+                          )
+                          for vulnerability in vulnerabilities:
+                              require(
+                                  isinstance(vulnerability, dict),
+                                  "scanner vulnerability must be an object",
+                              )
+                              vuln_id = canonical_string(
+                                  vulnerability.get("id"),
+                                  "scanner vulnerability id",
+                              )
+                              aliases = vulnerability.get("aliases", [])
+                              require(
+                                  isinstance(aliases, list),
+                                  "scanner vulnerability aliases must be an array",
+                              )
+                              normalized_aliases = []
+                              seen_aliases = set()
+                              for alias in aliases:
+                                  alias = canonical_string(
+                                      alias,
+                                      "scanner vulnerability alias",
+                                  )
+                                  require(
+                                      alias not in seen_aliases,
+                                      "scanner vulnerability aliases must not contain duplicates",
+                                  )
+                                  seen_aliases.add(alias)
+                                  normalized_aliases.append(alias)
+                              findings.append(
+                                  {
+                                      "package": package_name,
+                                      "id": vuln_id,
+                                      "aliases": normalized_aliases,
+                                  }
+                              )
+              return findings
+
+          def evaluate(payloads, policy):
+              findings = extract_vulnerabilities(payloads)
+              if not findings:
+                  if policy:
+                      raise GateError("approved disposition evidence is stale or drifted")
+                  return []
+
+              if policy is None:
+                  raise GateError(
+                      "vulnerabilities require blocking when no approved disposition file is configured"
+                  )
+
+              used_ids = set()
+              for finding in findings:
+                  ids = {finding["id"], *finding["aliases"]}
+                  matches = [
+                      acceptance
+                      for acceptance in policy
+                      if acceptance["finding"] in ids
+                      and finding["package"] in acceptance["packages"]
+                  ]
+                  require(
+                      len(matches) == 1,
+                      "a scanner vulnerability is unmatched or ambiguously dispositioned",
+                  )
+                  used_ids.add(matches[0]["id"])
+
+              require(
+                  used_ids == {acceptance["id"] for acceptance in policy},
+                  "approved disposition evidence is stale or drifted",
+              )
+
+              return sorted(
+                  (
+                      {
+                          "finding": acceptance["finding"],
+                          "issue": acceptance["issue"],
+                          "expiresAfter": acceptance["expiresAfter"],
+                      }
+                      for acceptance in policy
+                  ),
+                  key=lambda item: (item["finding"], item["issue"]),
+              )
+
+          def expect_gate_error(label, func):
+              try:
+                  func()
+              except GateError:
+                  return
+              raise GateError(f"self-test expected rejection: {label}")
+
+          def run_self_test(repo):
+              today = dt.date(2030, 1, 15)
+              ghsa = "GHSA-aaaa-bbbb-cccc"
+              second_ghsa = "GHSA-dddd-eeee-ffff"
+
+              base_policy = {
+                  "schemaVersion": 1,
+                  "acceptances": [
+                      {
+                          "id": "CI-SEC-SELFTEST-001",
+                          "finding": ghsa,
+                          "scope": "build-dev",
+                          "sourceSeverity": "high",
+                          "issue": f"https://github.com/{repo}/issues/16",
+                          "approvedOn": "2030-01-01",
+                          "expiresAfter": "2030-01-31",
+                          "residualRisk": "low",
+                          "rationale": "Synthetic runtime-only evaluator proof.",
+                          "packages": {
+                              "left-pad": {
+                                  "nodes": ["node_modules/left-pad"],
+                                  "isDirect": False,
+                                  "advisoryUrl": f"https://github.com/advisories/{ghsa}",
+                              }
+                          },
+                      }
+                  ],
+              }
+              primary_payload = {
+                  "results": [
+                      {
+                          "source": {
+                              "path": "/synthetic/package-lock.json",
+                              "type": "lockfile",
+                          },
+                          "packages": [
+                              {
+                                  "package": {
+                                      "name": "left-pad",
+                                      "version": "1.0.0",
+                                      "ecosystem": "npm",
+                                  },
+                                  "vulnerabilities": [
+                                      {"id": ghsa, "aliases": []}
+                                  ],
+                              }
+                          ],
+                      }
+                  ]
+              }
+              alias_payload = copy.deepcopy(primary_payload)
+              alias_payload["results"][0]["packages"][0]["vulnerabilities"] = [
+                  {"id": "CVE-2099-0001", "aliases": [ghsa]}
+              ]
+
+              validated = validate_policy(copy.deepcopy(base_policy), repo, today)
+              evaluate([primary_payload], validated)
+              evaluate([alias_payload], validated)
+
+              expect_gate_error(
+                  "no disposition",
+                  lambda: evaluate([primary_payload], None),
+              )
+
+              expired = copy.deepcopy(base_policy)
+              expired["acceptances"][0]["expiresAfter"] = "2030-01-14"
+              expect_gate_error(
+                  "expired disposition",
+                  lambda: validate_policy(expired, repo, today),
+              )
+
+              future = copy.deepcopy(base_policy)
+              future["acceptances"][0]["approvedOn"] = "2030-01-16"
+              expect_gate_error(
+                  "future approval",
+                  lambda: validate_policy(future, repo, today),
+              )
+
+              wrong_package = copy.deepcopy(base_policy)
+              wrong_package["acceptances"][0]["packages"] = {
+                  "different-package": {
+                      "nodes": ["node_modules/different-package"],
+                      "isDirect": False,
+                      "advisoryUrl": f"https://github.com/advisories/{ghsa}",
+                  }
+              }
+              wrong_package_validated = validate_policy(
+                  wrong_package,
+                  repo,
+                  today,
+              )
+              expect_gate_error(
+                  "wrong package",
+                  lambda: evaluate([primary_payload], wrong_package_validated),
+              )
+
+              unrelated = copy.deepcopy(primary_payload)
+              unrelated["results"][0]["packages"][0]["vulnerabilities"].append(
+                  {"id": second_ghsa, "aliases": []}
+              )
+              expect_gate_error(
+                  "unrelated additional vulnerability",
+                  lambda: evaluate([unrelated], validated),
+              )
+
+              malformed = copy.deepcopy(base_policy)
+              malformed["schemaVersion"] = 2
+              expect_gate_error(
+                  "malformed schema",
+                  lambda: validate_policy(malformed, repo, today),
+              )
+
+              ambiguous = copy.deepcopy(base_policy)
+              duplicate = copy.deepcopy(ambiguous["acceptances"][0])
+              duplicate["id"] = "CI-SEC-SELFTEST-002"
+              ambiguous["acceptances"].append(duplicate)
+              ambiguous_validated = validate_policy(
+                  ambiguous,
+                  repo,
+                  today,
+              )
+              expect_gate_error(
+                  "ambiguous disposition",
+                  lambda: evaluate([primary_payload], ambiguous_validated),
+              )
+
+              expect_gate_error(
+                  "malformed scanner payload",
+                  lambda: evaluate([{"results": "not-an-array"}], None),
+              )
+
+              evaluate([{"results": []}], None)
+
+          def write_normalized_policy(path, policy):
+              payload = {"acceptances": policy}
+              with open(path, "w", encoding="utf-8") as handle:
+                  json.dump(
+                      payload,
+                      handle,
+                      separators=(",", ":"),
+                      sort_keys=True,
+                  )
+                  handle.write("\n")
+              os.chmod(path, 0o600)
+
+          def main():
+              parser = argparse.ArgumentParser()
+              subparsers = parser.add_subparsers(
+                  dest="command",
+                  required=True,
+              )
+
+              self_test = subparsers.add_parser("self-test")
+              self_test.add_argument("--repo", required=True)
+
+              validate_file = subparsers.add_parser("validate-file")
+              validate_file.add_argument("--repo", required=True)
+              validate_file.add_argument("--workspace", required=True)
+              validate_file.add_argument("--input", required=True)
+              validate_file.add_argument("--output", required=True)
+
+              evaluate_cmd = subparsers.add_parser("evaluate")
+              evaluate_cmd.add_argument("--result", action="append", default=[])
+              evaluate_cmd.add_argument("--policy")
+
+              args = parser.parse_args()
+
+              try:
+                  if args.command == "self-test":
+                      run_self_test(args.repo)
+                      print(
+                          "Approved-disposition evaluator canaries verified: "
+                          "default-block, exact, alias, expired, future, wrong-package, "
+                          "unrelated, malformed, ambiguous, malformed-scanner, clean."
+                      )
+                      return 0
+
+                  if args.command == "validate-file":
+                      policy_path = resolve_policy_path(
+                          args.workspace,
+                          args.input,
+                      )
+                      policy_data = load_json(policy_path)
+                      today = dt.datetime.now(dt.timezone.utc).date()
+                      policy = validate_policy(
+                          policy_data,
+                          args.repo,
+                          today,
+                      )
+                      write_normalized_policy(args.output, policy)
+                      print(
+                          "Approved dependency disposition file validated."
+                      )
+                      return 0
+
+                  payloads = [
+                      load_json(path)
+                      for path in args.result
+                  ]
+                  policy = None
+                  if args.policy:
+                      normalized = load_json(args.policy)
+                      require(
+                          isinstance(normalized, dict)
+                          and set(normalized.keys()) == {"acceptances"}
+                          and isinstance(normalized["acceptances"], list),
+                          "normalized policy state is malformed",
+                      )
+                      policy = normalized["acceptances"]
+
+                  accepted = evaluate(payloads, policy)
+                  for item in accepted:
+                      print(
+                          "Accepted dependency disposition enforced:"
+                      )
+                      print(item["finding"])
+                      print(f'issue={item["issue"]}')
+                      print(
+                          f'expires-after={item["expiresAfter"]}'
+                      )
+                  return 0
+
+              except GateError as exc:
+                  print(
+                      f"LDW dependency disposition gate failed closed: {exc}",
+                      file=sys.stderr,
+                  )
+                  return 1
+
+          if __name__ == "__main__":
+              raise SystemExit(main())
+          PY
+          chmod 700 "$evaluator"
+          echo "LDW_DISPOSITION_EVALUATOR=$evaluator" >> "$GITHUB_ENV"
 
       - name: Bootstrap npm database and verify offline detector
         if: ${{ ! inputs.online_queries }}
@@ -159,10 +764,34 @@ jobs:
           rm -rf "$canary_dir" "$result_json" "$stderr_log"
           echo "OSV online detector canary verified."
 
+      - name: Verify approved-disposition fail-closed canaries
+        shell: bash
+        env:
+          CALLER_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 "$LDW_DISPOSITION_EVALUATOR" self-test --repo "$CALLER_REPOSITORY"
+
       - name: Check out caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Validate approved dependency disposition
+        if: ${{ inputs.accepted_findings_file != '' }}
+        shell: bash
+        env:
+          ACCEPTED_FINDINGS_FILE: ${{ inputs.accepted_findings_file }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          normalized="$RUNNER_TEMP/ldw-approved-dependency-dispositions.json"
+          python3 "$LDW_DISPOSITION_EVALUATOR" validate-file \
+            --repo "$CALLER_REPOSITORY" \
+            --workspace "$GITHUB_WORKSPACE" \
+            --input "$ACCEPTED_FINDINGS_FILE" \
+            --output "$normalized"
+          echo "LDW_ACCEPTED_FINDINGS_NORMALIZED=$normalized" >> "$GITHUB_ENV"
 
       - name: Scan JavaScript lockfiles without exposing scanner output
         shell: bash
@@ -181,11 +810,20 @@ jobs:
             exit 0
           fi
 
-          findings=0
+          result_files=()
+          temp_files=()
+          cleanup() {
+            if (( ${#temp_files[@]} > 0 )); then
+              rm -f "${temp_files[@]}"
+            fi
+          }
+          trap cleanup EXIT
+
           index=0
           for lockfile in "${lockfiles[@]}"; do
             result_json="$RUNNER_TEMP/osv-result-${index}.json"
             stderr_log="$RUNNER_TEMP/osv-result-${index}.stderr"
+            temp_files+=("$result_json" "$stderr_log")
             args=(scan source --lockfile="$lockfile" --format=json)
 
             if [[ "$ONLINE_QUERIES" != "true" ]]; then
@@ -199,37 +837,38 @@ jobs:
 
             case "$status" in
               0)
-                if ! jq -e . "$result_json" >/dev/null; then
-                  rm -f "$result_json" "$stderr_log"
+                if ! jq -e 'type == "object" and (.results | type == "array")' "$result_json" >/dev/null; then
                   echo "OSV-Scanner returned an invalid clean-result payload." >&2
                   exit 1
                 fi
+                result_files+=("$result_json")
                 ;;
               1)
-                if jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
-                  findings=1
-                else
-                  rm -f "$result_json" "$stderr_log"
+                if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
                   echo "OSV-Scanner returned exit code 1 without a valid vulnerability payload." >&2
                   exit 1
                 fi
+                result_files+=("$result_json")
                 ;;
               128)
                 ;;
               *)
-                rm -f "$result_json" "$stderr_log"
                 echo "OSV-Scanner failed with exit code $status. Scanner output is intentionally suppressed from CI logs." >&2
                 exit "$status"
                 ;;
             esac
 
-            rm -f "$result_json" "$stderr_log"
             index=$((index + 1))
           done
 
-          if [[ "$findings" -ne 0 ]]; then
-            echo "OSV-Scanner detected one or more known vulnerabilities in JavaScript dependencies. Finding contents are intentionally suppressed from CI logs." >&2
-            exit 1
+          evaluate_args=(evaluate)
+          for result_json in "${result_files[@]}"; do
+            evaluate_args+=(--result "$result_json")
+          done
+
+          if [[ -n "${LDW_ACCEPTED_FINDINGS_NORMALIZED:-}" ]]; then
+            evaluate_args+=(--policy "$LDW_ACCEPTED_FINDINGS_NORMALIZED")
           fi
 
+          python3 "$LDW_DISPOSITION_EVALUATOR" "${evaluate_args[@]}"
           echo "OSV-Scanner JavaScript dependency scan passed."
