@@ -62,7 +62,7 @@ jobs:
           import re
           import sys
 
-          GHSA_RE = re.compile(r"^GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}$")
+          GHSA_RE = re.compile(r"^GHSA-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$")
           DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
           NON_BLOCKING_RESIDUAL = {"informational", "low", "moderate"}
           TOP_LEVEL_KEYS = {"schemaVersion", "acceptances"}
