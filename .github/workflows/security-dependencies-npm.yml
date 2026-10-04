@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       verify_canary:
-        description: Verify the online detector with a runtime-only vulnerable npm lockfile. Offline mode always verifies its bootstrap canary.
+        description: Run central detector and production-path integration canaries. Online mode verifies its network detector; offline mode uses its bootstrap detector.
         required: false
         type: boolean
         default: false
@@ -647,6 +647,101 @@ jobs:
           chmod 700 "$evaluator"
           echo "LDW_DISPOSITION_EVALUATOR=$evaluator" >> "$GITHUB_ENV"
 
+      - name: Prepare production dependency scan runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_runner="$RUNNER_TEMP/ldw-osv-production-scan.sh"
+          cat > "$scan_runner" <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          workspace="$1"
+          online_queries="$2"
+          normalized_policy="${3:-}"
+
+          cd "$workspace"
+          mapfile -d '' lockfiles < <(
+            find . -path './.git' -prune -o -type f \
+              \( -name 'bun.lock' -o -name 'package-lock.json' -o -name 'pnpm-lock.yaml' -o -name 'yarn.lock' \) \
+              -print0
+          )
+
+          if (( ${#lockfiles[@]} == 0 )); then
+            if [[ -n "$normalized_policy" ]]; then
+              python3 "$LDW_DISPOSITION_EVALUATOR" evaluate \
+                --policy "$normalized_policy"
+            fi
+            echo "No supported JavaScript lockfiles found; dependency scan is not applicable."
+            exit 0
+          fi
+
+          result_files=()
+          temp_files=()
+          cleanup() {
+            if (( ${#temp_files[@]} > 0 )); then
+              rm -f "${temp_files[@]}"
+            fi
+          }
+          trap cleanup EXIT
+
+          index=0
+          for lockfile in "${lockfiles[@]}"; do
+            result_json="$RUNNER_TEMP/osv-result-${index}-$BASHPID.json"
+            stderr_log="$RUNNER_TEMP/osv-result-${index}-$BASHPID.stderr"
+            temp_files+=("$result_json" "$stderr_log")
+            args=(scan source --lockfile="$lockfile" --format=json)
+
+            if [[ "$online_queries" != "true" ]]; then
+              args+=(--offline --no-resolve --local-db-path="$OSV_DB_ROOT")
+            fi
+
+            set +e
+            "$OSV_SCANNER_BIN" "${args[@]}" >"$result_json" 2>"$stderr_log"
+            status=$?
+            set -e
+
+            case "$status" in
+              0)
+                if ! jq -e 'type == "object" and (.results | type == "array")' "$result_json" >/dev/null; then
+                  echo "OSV-Scanner returned an invalid clean-result payload." >&2
+                  exit 1
+                fi
+                result_files+=("$result_json")
+                ;;
+              1)
+                if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
+                  echo "OSV-Scanner returned exit code 1 without a valid vulnerability payload." >&2
+                  exit 1
+                fi
+                result_files+=("$result_json")
+                ;;
+              128)
+                ;;
+              *)
+                echo "OSV-Scanner failed with exit code $status. Scanner output is intentionally suppressed from CI logs." >&2
+                exit "$status"
+                ;;
+            esac
+
+            index=$((index + 1))
+          done
+
+          evaluate_args=(evaluate)
+          for result_json in "${result_files[@]}"; do
+            evaluate_args+=(--result "$result_json")
+          done
+
+          if [[ -n "$normalized_policy" ]]; then
+            evaluate_args+=(--policy "$normalized_policy")
+          fi
+
+          python3 "$LDW_DISPOSITION_EVALUATOR" "${evaluate_args[@]}"
+          echo "OSV-Scanner JavaScript dependency scan passed."
+          BASH
+          chmod 700 "$scan_runner"
+          echo "LDW_OSV_SCAN_RUNNER=$scan_runner" >> "$GITHUB_ENV"
+
       - name: Bootstrap npm database and verify offline detector
         if: ${{ ! inputs.online_queries }}
         shell: bash
@@ -799,76 +894,7 @@ jobs:
           ONLINE_QUERIES: ${{ inputs.online_queries }}
         run: |
           set -euo pipefail
-          mapfile -d '' lockfiles < <(
-            find . -path './.git' -prune -o -type f \
-              \( -name 'bun.lock' -o -name 'package-lock.json' -o -name 'pnpm-lock.yaml' -o -name 'yarn.lock' \) \
-              -print0
-          )
-
-          if (( ${#lockfiles[@]} == 0 )); then
-            echo "No supported JavaScript lockfiles found; dependency scan is not applicable."
-            exit 0
-          fi
-
-          result_files=()
-          temp_files=()
-          cleanup() {
-            if (( ${#temp_files[@]} > 0 )); then
-              rm -f "${temp_files[@]}"
-            fi
-          }
-          trap cleanup EXIT
-
-          index=0
-          for lockfile in "${lockfiles[@]}"; do
-            result_json="$RUNNER_TEMP/osv-result-${index}.json"
-            stderr_log="$RUNNER_TEMP/osv-result-${index}.stderr"
-            temp_files+=("$result_json" "$stderr_log")
-            args=(scan source --lockfile="$lockfile" --format=json)
-
-            if [[ "$ONLINE_QUERIES" != "true" ]]; then
-              args+=(--offline --no-resolve --local-db-path="$OSV_DB_ROOT")
-            fi
-
-            set +e
-            "$OSV_SCANNER_BIN" "${args[@]}" >"$result_json" 2>"$stderr_log"
-            status=$?
-            set -e
-
-            case "$status" in
-              0)
-                if ! jq -e 'type == "object" and (.results | type == "array")' "$result_json" >/dev/null; then
-                  echo "OSV-Scanner returned an invalid clean-result payload." >&2
-                  exit 1
-                fi
-                result_files+=("$result_json")
-                ;;
-              1)
-                if ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$result_json" >/dev/null; then
-                  echo "OSV-Scanner returned exit code 1 without a valid vulnerability payload." >&2
-                  exit 1
-                fi
-                result_files+=("$result_json")
-                ;;
-              128)
-                ;;
-              *)
-                echo "OSV-Scanner failed with exit code $status. Scanner output is intentionally suppressed from CI logs." >&2
-                exit "$status"
-                ;;
-            esac
-
-            index=$((index + 1))
-          done
-
-          evaluate_args=(evaluate)
-          for result_json in "${result_files[@]}"; do
-            evaluate_args+=(--result "$result_json")
-          done
-
-          if [[ -n "${LDW_ACCEPTED_FINDINGS_NORMALIZED:-}" ]]; then
-            evaluate_args+=(--policy "$LDW_ACCEPTED_FINDINGS_NORMALIZED")
-          fi
-
-          python3 "$LDW_DISPOSITION_EVALUATOR" "${evaluate_args[@]}"
-          echo "OSV-Scanner JavaScript dependency scan passed."
+          "$LDW_OSV_SCAN_RUNNER" \
+            "$GITHUB_WORKSPACE" \
+            "$ONLINE_QUERIES" \
+            "${LDW_ACCEPTED_FINDINGS_NORMALIZED:-}"
