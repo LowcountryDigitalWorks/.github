@@ -495,6 +495,7 @@ jobs:
                   "different-package": {
                       "nodes": ["node_modules/different-package"],
                       "isDirect": False,
+                      "advisoryUrl": f"https://github.com/advisories/{ghsa}",
                   }
               }
               wrong_package_validated = validate_policy(
