@@ -222,13 +222,20 @@ jobs:
                           f"{prefix}.packages[{package_name}].nodes",
                       )
 
-                      if "viaPackages" in spec:
+                      has_advisory_url = "advisoryUrl" in spec
+                      has_via_packages = "viaPackages" in spec
+                      require(
+                          has_advisory_url != has_via_packages,
+                          f"{prefix}.packages[{package_name}] must define exactly one of advisoryUrl or viaPackages",
+                      )
+
+                      if has_via_packages:
                           unique_nonblank_strings(
                               spec["viaPackages"],
                               f"{prefix}.packages[{package_name}].viaPackages",
                           )
 
-                      if "advisoryUrl" in spec:
+                      if has_advisory_url:
                           advisory = canonical_string(
                               spec["advisoryUrl"],
                               f"{prefix}.packages[{package_name}].advisoryUrl",
@@ -237,8 +244,14 @@ jobs:
                               advisory == f"https://github.com/advisories/{finding}",
                               f"{prefix}.packages[{package_name}].advisoryUrl does not match finding",
                           )
+                          advisory_binding_count += 1
 
                       normalized_packages[package_name] = True
+
+                  require(
+                      advisory_binding_count == 1,
+                      f"{prefix} must bind exactly one package directly to its GHSA advisory",
+                  )
 
                   normalized.append(
                       {
