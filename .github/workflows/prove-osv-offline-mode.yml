@@ -18,3 +18,5 @@ permissions:
 jobs:
   offline-mode-proof:
     uses: ./.github/workflows/security-dependencies-npm.yml
+    with:
+      verify_canary: true

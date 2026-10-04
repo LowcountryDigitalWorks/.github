@@ -40,6 +40,8 @@ The reusable secret workflow has been cross-repository validated from the privat
 
 The reusable workflow downloads the official Linux amd64 OSV-Scanner release artifact and verifies SHA-256 `edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c` before execution. Scanner stdout and stderr are redirected to ephemeral runner files that are deleted without being emitted or uploaded; CI exposes only fixed, sanitized messages and process status. Existing ecosystem-native audits such as npm/pnpm audit remain independent controls.
 
+By default, any OSV vulnerability remains blocking. A caller may optionally set `accepted_findings_file` to a repository-relative JSON file containing an **already approved** LDW build/dev dependency disposition. The shared workflow does not approve risk. After caller checkout it resolves the path canonically inside the caller workspace, rejects non-files and `.git` content, validates the existing schema/version, caller-repository issue URL, canonical approval/expiry dates, non-blank rationale, conservative non-blocking residual risk (`informational`, `low`, or `moderate`), package metadata, and GHSA advisory identity, then matches each OSV vulnerability by exact primary-ID-or-alias **and** affected package name. Missing, malformed, future, expired, ambiguous, stale/drifted, wrong-package, or unrelated findings fail closed. A validated disposition may expose only the accepted GHSA, canonical issue URL, and expiry date as sanitized governance evidence; scanner JSON, dependency inventories, and raw vulnerability detail remain suppressed. Accepted findings remain open evidence for remediation and do not become remediated or closed merely because CI permits the reviewed disposition.
+
 ### Privacy model
 
 The workflow's default is privacy-preserving offline matching. Callers must explicitly set `online_queries: true` to permit OSV network queries using caller dependency metadata.
@@ -54,7 +56,7 @@ The accepted GitHub-hosted Ubuntu offline proof measured an npm vulnerability-da
 
 ### Self-tests and rollout
 
-`prove-dependency-scanning.yml` is a thin self-test of the reusable workflow's explicit online path using a runtime-only vulnerable npm canary. `prove-osv-offline-mode.yml` is a thin self-test of the default offline path; offline bootstrap inherently verifies the same vulnerable canary before scanning the control repository.
+`prove-dependency-scanning.yml` is a thin self-test of the reusable workflow's explicit online path using a runtime-only vulnerable npm canary. `prove-osv-offline-mode.yml` is a thin self-test of the default offline path; offline bootstrap inherently verifies the same vulnerable canary before scanning the control repository. The reusable workflow also runs a network-free synthetic disposition-evaluator matrix before caller checkout on both paths, proving default blocking, exact-ID acceptance, alias acceptance, expiry and future-date rejection, wrong-package rejection, unrelated-finding rejection, malformed-schema/scanner rejection, ambiguity rejection, and clean-result behavior without relying on a customer or private repository.
 
 The reusable workflow was first adopted by the public `LowcountryDigitalWorks/secure-exchange` application repository through PR #17. That caller references the independently reviewed central commit `ebf64d4e7fb2bb6bab287601bb516612768a6a20`, explicitly opts into online queries because the repository and its dependency metadata are public, and leaves the repository's existing CI and native dependency checks independent.
 
