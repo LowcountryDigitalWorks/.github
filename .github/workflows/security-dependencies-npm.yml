@@ -197,6 +197,7 @@ jobs:
                   )
 
                   normalized_packages = {}
+                  advisory_binding_count = 0
                   for package_name, spec in packages.items():
                       package_name = canonical_string(package_name, f"{prefix}.packages name")
                       require(
