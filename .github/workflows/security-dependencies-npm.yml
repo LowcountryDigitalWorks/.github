@@ -187,7 +187,8 @@ jobs:
                       residual in NON_BLOCKING_RESIDUAL,
                       f"{prefix}.residualRisk is not in the non-blocking set",
                   )
-                  canonical_string(acceptance["rationale"], f"{prefix}.rationale")
+                  rationale = canonical_string(acceptance["rationale"], f"{prefix}.rationale")
+                  require(len(rationale) <= 2000, f"{prefix}.rationale exceeds 2000 characters")
 
                   packages = acceptance["packages"]
                   require(
