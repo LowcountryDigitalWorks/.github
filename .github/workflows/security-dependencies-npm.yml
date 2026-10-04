@@ -856,8 +856,35 @@ jobs:
             exit 1
           fi
 
-          rm -rf "$canary_dir" "$result_json" "$stderr_log"
+          offline_json="$RUNNER_TEMP/osv-online-proof-offline-db.json"
+          offline_stderr="$RUNNER_TEMP/osv-online-proof-offline-db.stderr"
+          set +e
+          "$OSV_SCANNER_BIN" scan source \
+            --offline-vulnerabilities \
+            --download-offline-databases \
+            --no-resolve \
+            --local-db-path="$OSV_DB_ROOT" \
+            --lockfile="$canary_dir/package-lock.json" \
+            --format=json \
+            >"$offline_json" 2>"$offline_stderr"
+          offline_status=$?
+          set -e
+
+          if [[ "$offline_status" -ne 1 ]] || ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$offline_json" >/dev/null; then
+            rm -rf "$canary_dir" "$result_json" "$stderr_log" "$offline_json" "$offline_stderr"
+            echo "OSV integration-proof offline database bootstrap failed validation." >&2
+            exit 1
+          fi
+
+          if ! find "$OSV_DB_ROOT" -type f -name all.zip -print -quit | grep -q .; then
+            rm -rf "$canary_dir" "$result_json" "$stderr_log" "$offline_json" "$offline_stderr"
+            echo "OSV integration-proof bootstrap did not create the expected npm vulnerability database." >&2
+            exit 1
+          fi
+
+          rm -rf "$canary_dir" "$result_json" "$stderr_log" "$offline_json" "$offline_stderr"
           echo "OSV online detector canary verified."
+          echo "OSV integration-proof offline database prepared before caller checkout."
 
       - name: Verify approved-disposition fail-closed canaries
         shell: bash
@@ -866,6 +893,321 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$LDW_DISPOSITION_EVALUATOR" self-test --repo "$CALLER_REPOSITORY"
+
+      - name: Prove caller-file and production scan integration
+        if: ${{ inputs.verify_canary }}
+        shell: bash
+        env:
+          CALLER_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          proof_root="$RUNNER_TEMP/ldw-osv-integration-proof"
+          workspace="$proof_root/workspace"
+          unrelated_workspace="$proof_root/unrelated-workspace"
+          empty_workspace="$proof_root/empty-workspace"
+          outside_policy="$proof_root/outside-policy.json"
+          seed_json="$proof_root/seed-result.json"
+          seed_stderr="$proof_root/seed-result.stderr"
+          normalized_policy="$proof_root/normalized-policy.json"
+
+          rm -rf "$proof_root"
+          mkdir -p \
+            "$workspace/config" \
+            "$workspace/.git" \
+            "$unrelated_workspace" \
+            "$empty_workspace/.git"
+
+          cleanup_proof() {
+            rm -rf "$proof_root"
+          }
+          trap cleanup_proof EXIT
+
+          cat > "$workspace/package-lock.json" <<'JSON'
+          {
+            "name": "ldw-osv-integration-proof",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": {
+                "name": "ldw-osv-integration-proof",
+                "version": "1.0.0",
+                "dependencies": {
+                  "lodash": "4.17.20"
+                }
+              },
+              "node_modules/lodash": {
+                "version": "4.17.20"
+              }
+            }
+          }
+          JSON
+
+          set +e
+          "$OSV_SCANNER_BIN" scan source \
+            --offline \
+            --no-resolve \
+            --local-db-path="$OSV_DB_ROOT" \
+            --lockfile="$workspace/package-lock.json" \
+            --format=json \
+            >"$seed_json" 2>"$seed_stderr"
+          seed_status=$?
+          set -e
+
+          if [[ "$seed_status" -ne 1 ]] || ! jq -e '[.results[]?.packages[]?.vulnerabilities? // [] | length] | add > 0' "$seed_json" >/dev/null; then
+            echo "OSV production-path integration seed scan failed validation." >&2
+            exit 1
+          fi
+
+          python3 - "$seed_json" "$workspace/config/accepted.json" "$CALLER_REPOSITORY" <<'PY'
+          import datetime as dt
+          import json
+          import re
+          import sys
+
+          source_path, policy_path, repo = sys.argv[1:]
+          ghsa_re = re.compile(r"^GHSA-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}$")
+
+          with open(source_path, "r", encoding="utf-8") as handle:
+              payload = json.load(handle)
+
+          bindings = {}
+          for result in payload.get("results", []):
+              for package_entry in result.get("packages", []):
+                  package = package_entry.get("package", {})
+                  package_name = package.get("name")
+                  if not isinstance(package_name, str) or not package_name:
+                      raise SystemExit("integration proof scanner package identity is invalid")
+                  for vulnerability in package_entry.get("vulnerabilities", []):
+                      candidates = [vulnerability.get("id"), *vulnerability.get("aliases", [])]
+                      ghsa = next(
+                          (
+                              value
+                              for value in candidates
+                              if isinstance(value, str) and ghsa_re.fullmatch(value)
+                          ),
+                          None,
+                      )
+                      if ghsa is None:
+                          raise SystemExit("integration proof vulnerability lacks a GHSA identity")
+                      bindings[(ghsa, package_name)] = True
+
+          if not bindings:
+              raise SystemExit("integration proof scanner returned no GHSA-bound vulnerabilities")
+
+          today = dt.datetime.now(dt.timezone.utc).date()
+          expires = today + dt.timedelta(days=1)
+          acceptances = []
+          for index, (ghsa, package_name) in enumerate(sorted(bindings), start=1):
+              acceptances.append(
+                  {
+                      "id": f"CI-SEC-INTEGRATION-{index:03d}",
+                      "finding": ghsa,
+                      "scope": "build-dev",
+                      "sourceSeverity": "high",
+                      "issue": f"https://github.com/{repo}/issues/16",
+                      "approvedOn": today.isoformat(),
+                      "expiresAfter": expires.isoformat(),
+                      "residualRisk": "low",
+                      "rationale": "Synthetic central production-path integration proof.",
+                      "packages": {
+                          package_name: {
+                              "nodes": [f"node_modules/{package_name}"],
+                              "isDirect": True,
+                              "advisoryUrl": f"https://github.com/advisories/{ghsa}",
+                          }
+                      },
+                  }
+              )
+
+          with open(policy_path, "w", encoding="utf-8") as handle:
+              json.dump(
+                  {"schemaVersion": 1, "acceptances": acceptances},
+                  handle,
+                  indent=2,
+                  sort_keys=True,
+              )
+              handle.write("\n")
+          PY
+
+          python3 "$LDW_DISPOSITION_EVALUATOR" validate-file \
+            --repo "$CALLER_REPOSITORY" \
+            --workspace "$workspace" \
+            --input "config/accepted.json" \
+            --output "$normalized_policy"
+          test -s "$normalized_policy"
+          echo "Valid repository-relative policy path and validate-file normalization verified."
+
+          cp "$workspace/config/accepted.json" "$outside_policy"
+          ln -s "$outside_policy" "$workspace/config/escape.json"
+          cp "$workspace/config/accepted.json" "$workspace/.git/policy.json"
+          cat > "$workspace/config/duplicate.json" <<'JSON'
+          {
+            "schemaVersion": 1,
+            "schemaVersion": 1,
+            "acceptances": []
+          }
+          JSON
+
+          expect_validate_failure() {
+            label="$1"
+            input_path="$2"
+            expected="$3"
+            stdout_log="$proof_root/validate-$label.stdout"
+            stderr_log="$proof_root/validate-$label.stderr"
+
+            set +e
+            python3 "$LDW_DISPOSITION_EVALUATOR" validate-file \
+              --repo "$CALLER_REPOSITORY" \
+              --workspace "$workspace" \
+              --input "$input_path" \
+              --output "$proof_root/validate-$label.json" \
+              >"$stdout_log" 2>"$stderr_log"
+            status=$?
+            set -e
+
+            if [[ "$status" -eq 0 ]] || ! grep -Fq -- "$expected" "$stderr_log"; then
+              echo "Expected policy-path rejection was not observed: $label" >&2
+              exit 1
+            fi
+            echo "Policy-path rejection verified: $label"
+          }
+
+          expect_validate_failure \
+            traversal \
+            "../outside-policy.json" \
+            "resolves outside the caller workspace"
+          expect_validate_failure \
+            symlink \
+            "config/escape.json" \
+            "resolves outside the caller workspace"
+          expect_validate_failure \
+            git-target \
+            ".git/policy.json" \
+            "must point to repository-controlled content"
+          expect_validate_failure \
+            duplicate-keys \
+            "config/duplicate.json" \
+            "JSON objects must not contain duplicate keys"
+
+          no_policy_log="$proof_root/no-policy.log"
+          set +e
+          "$LDW_OSV_SCAN_RUNNER" \
+            "$workspace" \
+            false \
+            "" \
+            >"$no_policy_log" 2>&1
+          no_policy_status=$?
+          set -e
+          if [[ "$no_policy_status" -eq 0 ]] || ! grep -Fq -- \
+            "vulnerabilities require blocking when no approved disposition file is configured" \
+            "$no_policy_log"; then
+            echo "Vulnerable production-path scan did not block without a disposition." >&2
+            exit 1
+          fi
+          echo "Vulnerable lockfile without disposition blocked as required."
+
+          exact_log="$proof_root/exact-policy.log"
+          "$LDW_OSV_SCAN_RUNNER" \
+            "$workspace" \
+            false \
+            "$normalized_policy" \
+            >"$exact_log" 2>&1
+
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            case "$line" in
+              "Accepted dependency disposition enforced:"|\
+              GHSA-????-????-????|\
+              "issue=https://github.com/$CALLER_REPOSITORY/issues/16"|\
+              expires-after=????-??-??|\
+              "OSV-Scanner JavaScript dependency scan passed.")
+                ;;
+              *)
+                echo "Unexpected production-path acceptance output; raw scanner detail may have escaped." >&2
+                exit 1
+                ;;
+            esac
+          done < "$exact_log"
+          cat "$exact_log"
+          echo "Exact active disposition passed with sanitized visibility only."
+
+          cat > "$unrelated_workspace/package-lock.json" <<'JSON'
+          {
+            "name": "ldw-osv-unrelated-proof",
+            "version": "1.0.0",
+            "lockfileVersion": 3,
+            "requires": true,
+            "packages": {
+              "": {
+                "name": "ldw-osv-unrelated-proof",
+                "version": "1.0.0",
+                "dependencies": {
+                  "lodash": "4.17.20",
+                  "minimist": "0.0.8"
+                }
+              },
+              "node_modules/lodash": {
+                "version": "4.17.20"
+              },
+              "node_modules/minimist": {
+                "version": "0.0.8"
+              }
+            }
+          }
+          JSON
+
+          unrelated_log="$proof_root/unrelated.log"
+          set +e
+          "$LDW_OSV_SCAN_RUNNER" \
+            "$unrelated_workspace" \
+            false \
+            "$normalized_policy" \
+            >"$unrelated_log" 2>&1
+          unrelated_status=$?
+          set -e
+          if [[ "$unrelated_status" -eq 0 ]] || ! grep -Fq -- \
+            "a scanner vulnerability is unmatched or ambiguously dispositioned" \
+            "$unrelated_log"; then
+            echo "Unrelated vulnerability did not block the production-path scan." >&2
+            exit 1
+          fi
+          echo "Accepted vulnerability plus unrelated vulnerability blocked as required."
+
+          no_lockfile_log="$proof_root/no-lockfile-no-policy.log"
+          "$LDW_OSV_SCAN_RUNNER" \
+            "$empty_workspace" \
+            false \
+            "" \
+            >"$no_lockfile_log" 2>&1
+          if ! grep -Fxq -- \
+            "No supported JavaScript lockfiles found; dependency scan is not applicable." \
+            "$no_lockfile_log"; then
+            echo "No-lockfile/no-policy NOT APPLICABLE behavior regressed." >&2
+            exit 1
+          fi
+          echo "No supported lockfile with no disposition remains NOT APPLICABLE / PASS."
+
+          stale_log="$proof_root/no-lockfile-with-policy.log"
+          set +e
+          "$LDW_OSV_SCAN_RUNNER" \
+            "$empty_workspace" \
+            false \
+            "$normalized_policy" \
+            >"$stale_log" 2>&1
+          stale_status=$?
+          set -e
+          if [[ "$stale_status" -eq 0 ]] || ! grep -Fq -- \
+            "approved disposition evidence is stale or drifted" \
+            "$stale_log"; then
+            echo "No-lockfile/configured-disposition stale reconciliation did not fail closed." >&2
+            exit 1
+          fi
+          echo "No supported lockfile with configured disposition blocks stale/drifted as required."
+
+          rm -f "$seed_json" "$seed_stderr"
+          echo "Caller-file and production OSV scan integration proof passed."
 
       - name: Check out caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
