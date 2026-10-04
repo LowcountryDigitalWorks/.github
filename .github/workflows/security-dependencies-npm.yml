@@ -751,7 +751,7 @@ jobs:
       - name: Verify approved-disposition fail-closed canaries
         shell: bash
         env:
-          CALLER_REPOSITORY: ${ github.repository }}
+          CALLER_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           python3 "$LDW_DISPOSITION_EVALUATOR" self-test --repo "$CALLER_REPOSITORY"
@@ -762,11 +762,11 @@ jobs:
           persist-credentials: false
 
       - name: Validate approved dependency disposition
-        if: ${ inputs.accepted_findings_file != '' }}
+        if: ${{ inputs.accepted_findings_file != '' }}
         shell: bash
         env:
-          ACCEPTED_FINDINGS_FILE: ${ inputs.accepted_findings_file }}
-          CALLER_REPOSITORY: ${ github.repository }}
+          ACCEPTED_FINDINGS_FILE: ${{ inputs.accepted_findings_file }}
+          CALLER_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           normalized="$RUNNER_TEMP/ldw-approved-dependency-dispositions.json"
@@ -780,7 +780,7 @@ jobs:
       - name: Scan JavaScript lockfiles without exposing scanner output
         shell: bash
         env:
-          ONLINE_QUERIES: ${ inputs.online_queries }}
+          ONLINE_QUERIES: ${{ inputs.online_queries }}
         run: |
           set -euo pipefail
           mapfile -d '' lockfiles < <(
@@ -789,7 +789,7 @@ jobs:
               -print0
           )
 
-          if (( $#lockfiles[@]} == 0 )); then
+          if (( ${#lockfiles[@]} == 0 )); then
             echo "No supported JavaScript lockfiles found; dependency scan is not applicable."
             exit 0
           fi
@@ -797,7 +797,7 @@ jobs:
           result_files=()
           temp_files=()
           cleanup() {
-            if (( $#temp_files[@]} > 0 )); then
+            if (( ${#temp_files[@]} > 0 )); then
               rm -f "${temp_files[@]}"
             fi
           }
