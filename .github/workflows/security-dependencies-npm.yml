@@ -972,7 +972,9 @@ jobs:
           with open(source_path, "r", encoding="utf-8") as handle:
               payload = json.load(handle)
 
-          bindings = {}
+          from itertools import combinations
+
+          package_rows = {}
           for result in payload.get("results", []):
               for package_entry in result.get("packages", []):
                   package = package_entry.get("package", {})
@@ -980,21 +982,33 @@ jobs:
                   if not isinstance(package_name, str) or not package_name:
                       raise SystemExit("integration proof scanner package identity is invalid")
                   for vulnerability in package_entry.get("vulnerabilities", []):
-                      candidates = [vulnerability.get("id"), *vulnerability.get("aliases", [])]
-                      ghsa = next(
-                          (
-                              value
-                              for value in candidates
-                              if isinstance(value, str) and ghsa_re.fullmatch(value)
-                          ),
-                          None,
-                      )
-                      if ghsa is None:
+                      candidates = {
+                          value
+                          for value in [vulnerability.get("id"), *vulnerability.get("aliases", [])]
+                          if isinstance(value, str) and ghsa_re.fullmatch(value)
+                      }
+                      if not candidates:
                           raise SystemExit("integration proof vulnerability lacks a GHSA identity")
-                      bindings[(ghsa, package_name)] = True
+                      package_rows.setdefault(package_name, []).append(candidates)
 
-          if not bindings:
+          if not package_rows:
               raise SystemExit("integration proof scanner returned no GHSA-bound vulnerabilities")
+
+          bindings = []
+          for package_name, rows in sorted(package_rows.items()):
+              universe = sorted(set().union(*rows))
+              selected = None
+              for count in range(1, len(universe) + 1):
+                  for candidate_tuple in combinations(universe, count):
+                      candidate_set = set(candidate_tuple)
+                      if all(len(row & candidate_set) == 1 for row in rows):
+                          selected = sorted(candidate_set)
+                          break
+                  if selected is not None:
+                      break
+              if selected is None:
+                  raise SystemExit("integration proof could not derive an exact GHSA disposition cover")
+              bindings.extend((ghsa, package_name) for ghsa in selected)
 
           today = dt.datetime.now(dt.timezone.utc).date()
           expires = today + dt.timedelta(days=1)
