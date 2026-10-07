@@ -4,68 +4,53 @@ Status: candidate under issue #18 until independently reviewed and merged.
 
 ## Purpose
 
-LDW's reusable Betterleaks control must catch secrets in authoritative repository history without allowing an unrelated abandoned feature branch to block every future pull request.
+The reusable Betterleaks control scans both the caller-authoritative commit history and the candidate's current tree. History scanning preserves detection for secrets added and later removed, while the tree scan covers merge or conflict-resolution content that exists in the candidate result without appearing in the exact PR-head history.
 
-Betterleaks' default `git` history mode traverses full history across all refs when no custom Git log scope is supplied. GitHub Actions full-depth checkout can make multiple remote branch refs available locally. Therefore `betterleaks git .` without a scope is broader than the caller's authoritative change boundary.
-
-The reusable workflow keeps full-depth checkout for commit-object availability but passes an explicit Betterleaks `--log-opts` scope.
+The workflow keeps a full-depth checkout so exact event commits are available. Betterleaks remains pinned to v1.7.4 and its verified archive checksum.
 
 ## Pull requests
 
-For `pull_request` and `pull_request_target` callers, the workflow uses the exact caller event SHAs:
+For pull_request and pull_request_target callers, the history scan uses the immutable event base and head SHAs, plus Betterleaks v1.7.4's existing diff filter:
 
-```text
-<github.event.pull_request.base.sha>..<github.event.pull_request.head.sha>
-```
+    betterleaks git . --log-opts="<base-sha>..<head-sha> --diff-filter=tuxdb"
 
-This scans commits reachable from the candidate head that are not reachable from the PR base. The workflow fails closed if either SHA is missing or unavailable locally.
+The workflow requires both revisions to be 40-character commit SHAs and to resolve locally as commits. Missing, malformed, branch-name, or unavailable revisions fail closed. Fork heads that are not available in the checkout also fail closed.
 
-The scan is keyed to immutable event SHAs rather than mutable branch names. An unrelated remote branch may exist in the checkout, but it is not part of the Betterleaks candidate range and cannot independently fail that PR.
-
-A later force-push/synchronize event supplies a new exact head SHA and therefore creates a new candidate history scope.
+The exact SHA range selects commits reachable from the candidate head that are not reachable from the PR base. An unrelated remote branch is outside this history range. A separate Betterleaks directory scan covers the checked-out candidate tree, including the GitHub merge/reconciliation result.
 
 ## Push, manual, and other non-PR callers
 
-For non-PR callers, the workflow scopes Betterleaks to:
+The history scan is rooted at the exact caller SHA and preserves the v1.7.4 diff filter:
 
-```text
-<github.sha>
-```
+    betterleaks git . --log-opts="<github.sha> --diff-filter=tuxdb"
 
-`git log <sha>` traverses the complete history reachable from that authoritative caller commit. This preserves the intended full accepted-history check for `main`/default-branch runs without adding unrelated side branches through `--all`.
+The resolver rejects missing, malformed, branch-name, or unavailable caller revisions. The current-tree scan complements history scanning and does not change the authoritative history root.
 
-## Security properties preserved
+## Validation canaries
 
-The correction does **not** change:
+When verify_canary is enabled, the workflow creates a temporary Git repository and runtime-only detector-shaped values. It proves:
 
-- Betterleaks v1.7.4;
-- the pinned upstream archive digest;
-- `permissions: contents: read`;
-- `persist-credentials: false`;
-- 100% finding redaction;
-- generic-only CI failure messages;
-- no report/artifact upload;
-- 10-minute timeout;
-- runtime detector canary.
+1. A value on an unrelated branch does not affect a safe candidate history range.
+2. A value introduced and later removed in candidate history is still detected.
+3. The resolver accepts valid exact commit SHAs with the expected options and rejects blank, malformed, unavailable, and branch-name revisions.
+4. A value added only while resolving a synthetic merge conflict is absent from the exact candidate head tree and detected in the merge-result tree scan.
 
-The self-test additionally creates a temporary Git repository and proves all three behaviors:
+The runtime and history scan output is redirected to temporary logs, logs are deleted, finding contents are never printed, and no artifact is uploaded. Canary content is not committed to Lowcountry Digital Works repositories.
 
-1. a detector-shaped runtime canary committed only on an unrelated branch does not fail a safe selected candidate range;
-2. the same canary committed inside the selected PR-style candidate range is detected;
-3. a non-PR scan rooted at the selected head detects the canary in that head's reachable history.
+## Preserved security properties
 
-The temporary repository and scanner logs are deleted. Canary contents are constructed only at runtime and are never committed to the LDW repository.
+This correction preserves:
 
-## Why this is not a weakening
+- Betterleaks v1.7.4 and the pinned upstream archive digest;
+- permissions: contents: read;
+- persist-credentials: false;
+- full-depth checkout for commit-object availability;
+- 100% finding redaction and generic CI failure messages;
+- no report artifact, new credential, permission, customer data, or paid service;
+- exact PR base/head SHAs and non-PR history rooted at exact github.sha.
 
-The pull-request gate exists to evaluate the candidate being proposed for acceptance. Side branches that are not part of that candidate are not authoritative inputs to that decision.
-
-When a candidate is merged, the main-push scan checks the complete history reachable from the resulting authoritative main SHA. Thus a secret introduced by an accepted PR remains detectable on the authoritative branch as well as before merge.
-
-This change does not create an allowlist and does not suppress a finding in the selected history. It changes only the Git history boundary from implicit `--all` to an explicit caller-authoritative range.
+The history boundary changes only which commits Betterleaks traverses. The v1.7.4 --diff-filter=tuxdb behavior remains explicit. The additional current-tree pass covers merge/reconciliation results that are not represented by the PR head's commit range.
 
 ## Rollout
 
-Caller repositories pin reusable workflows to independently reviewed immutable commits of `LowcountryDigitalWorks/.github`. After this change is accepted, caller repositories must repin in separate bounded PRs before they receive the new scope semantics.
-
-Do not delete or rewrite unrelated historical branches merely to make the central scan green. Branch cleanup is a separate repository-maintenance/destructive-change decision.
+Caller repositories pin reusable workflows independently to immutable commits. Any caller repinning is a separate, bounded change after the shared workflow correction is accepted. Do not delete or rewrite historical branches to make the central scan pass.
