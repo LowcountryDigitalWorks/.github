@@ -16,7 +16,7 @@ For pull_request and pull_request_target callers, the history scan uses the immu
 
 The workflow requires both revisions to be 40-character commit SHAs and to resolve locally as commits. Missing, malformed, branch-name, or unavailable revisions fail closed. Fork heads that are not available in the checkout also fail closed.
 
-The exact SHA range selects commits reachable from the candidate head that are not reachable from the PR base. An unrelated remote branch is outside this history range. A separate Betterleaks directory scan covers the checked-out candidate tree, including the GitHub merge/reconciliation result.
+The exact SHA range selects commits reachable from the candidate head that are not reachable from the PR base. An unrelated remote branch is outside this history range. For pull_request, a separate Betterleaks directory scan covers the checked-out GitHub merge/reconciliation result. For pull_request_target, the workflow creates a temporary merge tree from the exact base and head commits and scans that tree. If the merge result cannot be resolved, the workflow fails closed. No candidate code is executed.
 
 ## Push, manual, and other non-PR callers
 
