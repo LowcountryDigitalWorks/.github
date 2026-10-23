@@ -101,7 +101,7 @@ This starter is appropriate for LDW-owned repositories. For client-owned product
 
 ### Starter workflow PR-efficiency policy
 
-LDW starter workflows use a draft/ready pull-request pattern to conserve hosted runner capacity without weakening final validation. Draft pull-request jobs skip before runner allocation; `ready_for_review` triggers the full applicable checks; later synchronizes while ready continue validation; and PR-only concurrency cancels obsolete in-progress runs when a newer commit supersedes them. Default-branch push validation remains enabled and is not cancelled by this efficiency policy. Scheduled and manual security checks retain their existing behavior.
+LDW starter workflows use a draft/ready pull-request pattern to conserve hosted runner capacity without weakening final validation. Draft pull-request jobs skip before runner allocation; `ready_for_review` triggers the full applicable checks; later synchronizes while ready continue validation; and PR-only concurrency keys on the pull-request number so obsolete in-progress runs for the same PR are cancelled while different PRs remain isolated. Non-PR events use the unique `github.run_id` fallback instead of a shared ref, so separate default-branch pushes, scheduled runs, and manual dispatches cannot replace one another as pending members of a concurrency group. Default-branch push validation remains enabled and is not cancelled by this efficiency policy. Scheduled and manual security checks retain their existing behavior.
 
 ## Cross-repository CI adoption governance
 
