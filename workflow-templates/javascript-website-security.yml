@@ -2,6 +2,7 @@ name: Website security baseline
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -13,21 +14,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-scan:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     uses: LowcountryDigitalWorks/.github/.github/workflows/security-dependencies-npm.yml@a377e52ba698e93d012aa553e4de4af39ba75799
     with:
       online_queries: false
       verify_canary: false
 
   secret-scan:
-    if: ${{ github.event_name != 'schedule' }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && github.event_name != 'schedule' }}
     uses: LowcountryDigitalWorks/.github/.github/workflows/security-secrets.yml@a377e52ba698e93d012aa553e4de4af39ba75799
     with:
       verify_canary: false
 
   codeql:
-    if: ${{ github.event_name != 'schedule' || github.event.schedule == '31 12 * * 3' }}
+    if: ${{ (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (github.event_name != 'schedule' || github.event.schedule == '31 12 * * 3') }}
     permissions:
       contents: read
       security-events: write
