@@ -8,12 +8,12 @@ TOOLS = {
     "actionlint": {
         "version": 'ACTIONLINT_VERSION: "1.7.12"',
         "digest": 'ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"',
-        "url": "https://github.com/rhysd/actionlint/releases/download/v",
+        "url": "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz",
     },
     "zizmor": {
         "version": 'ZIZMOR_VERSION: "1.29.0"',
         "digest": 'ZIZMOR_SHA256: "dd96df044a6e8538d5f423790f453bdd03d49e5b2bcc38214acc41a2f1297839"',
-        "url": "https://github.com/zizmorcore/zizmor/releases/download/v",
+        "url": "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz",
     },
 }
 
