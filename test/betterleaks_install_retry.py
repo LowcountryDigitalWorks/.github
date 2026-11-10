@@ -97,8 +97,13 @@ def check_workflow() -> None:
     assert_true("permissions:\n  contents: read\n" in text, "permissions changed")
     for name in (
         "Materialize immutable trusted Betterleaks config",
+        "Enforce sanitized Betterleaks configuration environment",
+        "Install LDW Betterleaks invocation wrapper",
         "Verify detector with runtime-only canary",
         "Verify caller Betterleaks config cannot weaken trusted policy",
+        "Verify title-only caller betterleaks.toml cannot weaken trusted policy",
+        "Verify inline allow signatures cannot suppress trusted detections",
+        "Verify BETTERLEAKS_CONFIG_TOML injection cannot weaken trusted policy",
         "Verify Git-history scope and fail-closed revision resolution",
         "Bind caller-authoritative scan mode",
         "Resolve caller-authoritative Git scan scope",
@@ -106,7 +111,8 @@ def check_workflow() -> None:
         "Scan caller candidate tree for merge/reconciliation results",
     ):
         assert_true(f"- name: {name}\n" in text, f"downstream step missing: {name}")
-    assert_true('--config "$BETTERLEAKS_TRUSTED_CONFIG"' in text, "trusted config flag missing on scanner")
+    assert_true("--ignore-gitleaks-allow" in text, "inline allow rejection missing")
+    assert_true('LDW_BETTERLEAKS' in text, "wrapper missing")
     assert_true("scan_is_pull_request:" in text, "workflow_call scan authority missing")
 
 
