@@ -105,6 +105,7 @@ def check_workflow() -> None:
         "Verify inline allow signatures cannot suppress trusted detections",
         "Verify BETTERLEAKS_CONFIG_TOML injection cannot weaken trusted policy",
         "Verify Git-history scope and fail-closed revision resolution",
+        "Verify scan mode binding refuses workflow_run and unknown events",
         "Bind caller-authoritative scan mode",
         "Resolve caller-authoritative Git scan scope",
         "Scan caller-authoritative Git history without exposing findings",
