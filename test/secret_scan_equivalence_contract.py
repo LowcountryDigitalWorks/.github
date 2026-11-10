@@ -24,6 +24,7 @@ def main() -> None:
     assert_true("scan_head_sha:" in text, "workflow_call head sha input missing")
     assert_true("Materialize immutable trusted Betterleaks config" in text, "trusted config step missing")
     assert_true('BETTERLEAKS_TRUSTED_CONFIG' in text, "trusted config env missing")
+    assert_true("useDefault = true" in text, "trusted config must inherit embedded defaults")
     assert_true("--config \"$BETTERLEAKS_TRUSTED_CONFIG\"" in text, "trusted --config not on all scans")
     assert_true("Bind caller-authoritative scan mode" in text, "scan mode binding missing")
     assert_true("Verify caller Betterleaks config cannot weaken trusted policy" in text, "config adversarial canary missing")
