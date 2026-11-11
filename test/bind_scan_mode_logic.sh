@@ -98,4 +98,7 @@ run_selftest() {
 
 if [[ "${1:-}" == 'selftest' ]]; then
   run_selftest
+elif [[ "${1:-}" == 'bind' ]]; then
+  shift
+  ldw_bind_scan_mode "$@"
 fi
