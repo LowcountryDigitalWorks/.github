@@ -17,6 +17,8 @@ def main() -> None:
         "LDW_SCAN_TRUST_BOUNDARY",
         "ldw_quarantine_candidate_fingerprint_ignore_policies",
         "ldw_scan_quarantined_policy_blobs",
+        "ldw_list_policy_vault_slots",
+        "Policy-blob vault enumeration failed (fail-closed)",
         "ldw_vault_git_policy_blobs_at_ref",
         "LDW_POLICY_BLOB_VAULT",
         "candidate-policy-bytes.dat",
