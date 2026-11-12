@@ -1,6 +1,6 @@
 # Reusable secret-scanning scope
 
-Status: candidate under issue #18 until independently reviewed and merged.
+Status: BO #552 hosted-equivalence repair candidate (**SOURCE_ONLY / UNACCEPTED** until author-excluded H0/M0).
 
 ## Purpose
 
@@ -16,15 +16,25 @@ For pull_request and pull_request_target callers, the history scan uses the immu
 
 The workflow requires both revisions to be 40-character commit SHAs and to resolve locally as commits. Missing, malformed, branch-name, or unavailable revisions fail closed. Fork heads that are not available in the checkout also fail closed.
 
-The exact SHA range selects commits reachable from the candidate head that are not reachable from the PR base. An unrelated remote branch is outside this history range. For pull_request, a separate Betterleaks directory scan covers the checked-out GitHub merge/reconciliation result. For pull_request_target, the workflow creates a temporary merge tree from the exact base and head commits and scans that tree. If the merge result cannot be resolved, the workflow fails closed. No candidate code is executed.
+The exact SHA range selects commits reachable from the candidate head that are not reachable from the PR base. An unrelated remote branch is outside this history range. For every pull-request-shaped scan (including `workflow_call` with `scan_is_pull_request: true` and exact base/head inputs), the workflow resolves `git merge-tree --write-tree` from exact base/head commit objects, materializes a read-only worktree with `git read-tree` and `git checkout-index` (no `git archive`, no hooks), and scans that tree with Betterleaks `dir` through a workflow-owned invocation wrapper. The wrapper always passes explicit `--config` with `[extend] useDefault = true`, unsets `BETTERLEAKS_CONFIG` / `BETTERLEAKS_CONFIG_TOML` (and legacy `GITLEAKS_*` aliases), and passes Betterleaks v1.7.4 `--ignore-gitleaks-allow` so inline allow markers cannot suppress findings. Caller-authored `betterleaks.toml`, `.betterleaks.toml`, title-only configs, and env-injected TOML cannot weaken detection. `pull_request_target` is explicitly refused. If the merge result cannot be resolved, the workflow fails closed. No candidate code is executed.
+
+## Required-check provenance (out of scope for this repository)
+
+This shared workflow does **not** by itself prevent a consumer repository from spoofing or no-oping a mandatory check name on `pull_request`. A PR-editable caller workflow that runs on `pull_request` can still replace the job definition under the same check label until a **separate**, trusted-main-bound caller and check-attestation design is accepted and independently reviewed. The shared scanner itself refuses `workflow_run` until such a design exists; `workflow_run` is not treated here as an approved mandatory PR check transport. Consumer migration from isolated to GitHub-hosted execution is **not** security-equivalent until that provenance HIGH is closed in `business-operations` (or equivalent consumer), then repinned to an accepted immutable `.github` commit. Do not treat this source candidate alone as permission to flip `use_isolated_runner` or relax branch protection.
 
 ## Push, manual, and other non-PR callers
+
+Trusted **direct** non-PR invocation surfaces are `workflow_call` (without `scan_is_pull_request`), `push`, and `workflow_dispatch` only. Each binds `SCAN_MODE=single_sha` to the caller's authoritative `github.sha` for that event.
 
 The history scan is rooted at the exact caller SHA and preserves the v1.7.4 diff filter:
 
     betterleaks git . --log-opts="<github.sha> --diff-filter=tuxdb"
 
 The resolver rejects missing, malformed, branch-name, or unavailable caller revisions. The current-tree scan complements history scanning and does not change the authoritative history root.
+
+## Refused invocation surfaces
+
+`workflow_run` is **unsupported** and fails closed before scan mode binding. It commonly carries default-branch `GITHUB_SHA`, is not an approved mandatory-check shape for pull requests, and must not be combined with caller `scan_is_pull_request` inputs to impersonate trusted PR coverage. Unknown `github.event_name` values also fail closed (no silent `GITHUB_SHA` fallback). `pull_request_target` remains explicitly refused.
 
 ## Validation canaries
 
@@ -33,7 +43,8 @@ When verify_canary is enabled, the workflow creates a temporary Git repository a
 1. A value on an unrelated branch does not affect a safe candidate history range.
 2. A value introduced and later removed in candidate history is still detected.
 3. The resolver accepts valid exact commit SHAs with the expected options and rejects blank, malformed, unavailable, and branch-name revisions.
-4. A value added only while resolving a synthetic merge conflict is absent from the exact candidate head tree and detected in the merge-result tree scan.
+4. A value added only while resolving a synthetic merge conflict is absent from the exact candidate head tree and detected in the merge-result tree scan materialized via `read-tree` / `checkout-index`.
+5. Title-only `betterleaks.toml`, inline `betterleaks:allow` markers, and `BETTERLEAKS_CONFIG_TOML` injection do not weaken trusted detection.
 
 The runtime and history scan output is redirected to temporary logs, logs are deleted, finding contents are never printed, and no artifact is uploaded. Canary content is not committed to Lowcountry Digital Works repositories.
 

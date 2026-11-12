@@ -96,13 +96,25 @@ def check_workflow() -> None:
     assert_true(step.index("curl") < checksum_at, "checksum does not follow the download")
     assert_true("permissions:\n  contents: read\n" in text, "permissions changed")
     for name in (
+        "Materialize immutable trusted Betterleaks config",
+        "Enforce sanitized Betterleaks configuration environment",
+        "Install LDW Betterleaks invocation wrapper",
         "Verify detector with runtime-only canary",
+        "Verify caller Betterleaks config cannot weaken trusted policy",
+        "Verify title-only caller betterleaks.toml cannot weaken trusted policy",
+        "Verify inline allow signatures cannot suppress trusted detections",
+        "Verify BETTERLEAKS_CONFIG_TOML injection cannot weaken trusted policy",
         "Verify Git-history scope and fail-closed revision resolution",
+        "Verify scan mode binding refuses workflow_run and unknown events",
+        "Bind caller-authoritative scan mode",
         "Resolve caller-authoritative Git scan scope",
         "Scan caller-authoritative Git history without exposing findings",
         "Scan caller candidate tree for merge/reconciliation results",
     ):
         assert_true(f"- name: {name}\n" in text, f"downstream step missing: {name}")
+    assert_true("--ignore-gitleaks-allow" in text, "inline allow rejection missing")
+    assert_true('LDW_BETTERLEAKS' in text, "wrapper missing")
+    assert_true("scan_is_pull_request:" in text, "workflow_call scan authority missing")
 
 
 def serve(mode: str, payload: bytes) -> tuple[http.server.HTTPServer, int]:
